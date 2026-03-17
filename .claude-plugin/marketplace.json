@@ -1,0 +1,16 @@
+{
+  "name": "alivecomputer",
+  "owner": {
+    "name": "Alive Computer",
+    "email": "hello@alivecomputer.com"
+  },
+  "plugins": [
+    {
+      "name": "alive",
+      "source": "./plugins/alive",
+      "description": "Personal private context infrastructure. Structured files, a caretaker runtime, and 12 skills that turn your machine into an alive computer.",
+      "version": "1.0.1-beta",
+      "category": "productivity"
+    }
+  ]
+}
