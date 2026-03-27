@@ -82,7 +82,8 @@ Fetch packages from the local relay inbox. Triggered by:
 
 - `/alive:receive --relay` (explicit)
 - The squirrel acting on the session-start hook notification ("N packages waiting on the relay")
-- Future: `/alive:relay pull` or `/alive:relay status` → "Import now?" (relay skill delegates here)
+- `/alive:relay status` → "Import now?" (relay skill invokes `/alive:receive --relay`)
+- `/alive:relay pull` (relay skill delegates to `/alive:receive --relay`)
 
 **Relay pull flow:**
 
@@ -116,19 +117,29 @@ If no world root:
 ╰─
 ```
 
-Check relay config. A relay is "configured for pull" when relay.yaml exists AND has a non-empty `relay.repo` and a local clone. A partial relay.yaml (from bootstrap, with empty `repo`/`local`) is NOT sufficient for relay pull:
+Check relay config. A relay is "configured for pull" when relay.yaml exists AND has a non-empty `relay.repo` and `relay.local`, and the local clone directory exists. A partial relay.yaml (from bootstrap, with empty `repo`/`local`) is NOT sufficient for relay pull.
+
+Parse `relay.local` from config (do not hardcode the path):
 
 ```bash
 if [ ! -f "$WORLD_ROOT/.alive/relay.yaml" ]; then
   echo "NOT_CONFIGURED"
 elif ! grep -q 'repo: "[^"]' "$WORLD_ROOT/.alive/relay.yaml" 2>/dev/null; then
   echo "PARTIAL_CONFIG"
-elif [ ! -d "$WORLD_ROOT/.alive/relay/.git" ]; then
-  echo "CLONE_MISSING"
 else
-  echo "CONFIGURED"
+  RELAY_LOCAL=$(grep '^ *local:' "$WORLD_ROOT/.alive/relay.yaml" | head -1 | sed 's/^.*local: *"*\([^"]*\)"*/\1/' | tr -d '[:space:]')
+  if [ -z "$RELAY_LOCAL" ]; then
+    echo "PARTIAL_CONFIG"
+  elif [ ! -d "$WORLD_ROOT/$RELAY_LOCAL/.git" ]; then
+    echo "CLONE_MISSING"
+  else
+    echo "CONFIGURED"
+    echo "RELAY_LOCAL=$RELAY_LOCAL"
+  fi
 fi
 ```
+
+Persist `RELAY_LOCAL` in conversation state -- it is used for pull, inbox listing, and cleanup throughout entry point 3.
 
 If not configured:
 
@@ -161,12 +172,12 @@ If clone missing:
 
 #### 3b. Pull latest from relay clone
 
-Pull with credential prompts disabled and check exit code. The clone existence check already happened in 3a:
+Pull with credential prompts disabled and check exit code. The clone existence check already happened in 3a. Use `$RELAY_LOCAL` from 3a:
 
 ```bash
 # Prevent git from prompting for credentials (would hang)
 export GIT_TERMINAL_PROMPT=0
-git -C "$WORLD_ROOT/.alive/relay" pull --quiet 2>&1
+git -C "$WORLD_ROOT/$RELAY_LOCAL" pull --quiet 2>&1
 
 if [ $? -ne 0 ]; then
   echo "PULL_FAILED"
@@ -199,7 +210,7 @@ GITHUB_USERNAME=$(grep '^ *github_username:' "$WORLD_ROOT/.alive/relay.yaml" | h
 #### 3c. List packages in own inbox
 
 ```bash
-find "$WORLD_ROOT/.alive/relay/inbox/$GITHUB_USERNAME" \
+find "$WORLD_ROOT/$RELAY_LOCAL/inbox/$GITHUB_USERNAME" \
   -name "*.walnut" -type f 2>/dev/null
 ```
 
@@ -232,7 +243,21 @@ If packages found, present them:
 
 For each selected package, set a flag `RELAY_SOURCE=true` in conversation state along with the package file path. Then feed into the existing flow starting at Step 1 (extract + read manifest).
 
-The `RELAY_SOURCE` flag tells Step 2 to attempt RSA auto-decryption before falling back to passphrase prompt. It also tells Step 8 to perform git cleanup instead of filesystem archival.
+The `RELAY_SOURCE` flag tells Step 2 to attempt RSA auto-decryption and tells Step 8 to skip filesystem archival (git cleanup happens in 3e instead).
+
+**Auto-detection for non-relay entry points:** If entry points 1 or 2 receive a package path that resolves inside the relay inbox (`$WORLD_ROOT/<relay.local>/inbox/`), automatically set `RELAY_SOURCE=true`. This ensures cleanup works correctly regardless of how the receive skill was invoked:
+
+```bash
+# Check if the package path is inside the relay inbox
+PACKAGE_REAL="$(cd "$(dirname "<package-path>")" 2>/dev/null && pwd -P)/$(basename "<package-path>")"
+RELAY_LOCAL=$(grep '^ *local:' "$WORLD_ROOT/.alive/relay.yaml" 2>/dev/null | head -1 | sed 's/^.*local: *"*\([^"]*\)"*/\1/' | tr -d '[:space:]')
+if [ -n "$RELAY_LOCAL" ]; then
+  RELAY_INBOX_REAL="$(cd "$WORLD_ROOT/$RELAY_LOCAL" 2>/dev/null && pwd -P)/inbox"
+  case "$PACKAGE_REAL" in
+    "$RELAY_INBOX_REAL"/*) RELAY_SOURCE=true ;;
+  esac
+fi
+```
 
 Process packages sequentially. Between packages, confirm continuation:
 
@@ -253,7 +278,7 @@ After each package is successfully imported via the full receive flow (Steps 1-9
 If multiple packages are imported in sequence, batch the git cleanup -- remove all successfully imported packages in a single commit:
 
 ```bash
-cd "$WORLD_ROOT/.alive/relay"
+cd "$WORLD_ROOT/$RELAY_LOCAL"
 
 # Prevent git from prompting for credentials
 export GIT_TERMINAL_PROMPT=0
@@ -289,7 +314,7 @@ If the push fails (network error), warn but don't block:
 After processing all packages, update `last_sync` and `last_commit` in relay.yaml:
 
 ```bash
-python3 - "$WORLD_ROOT/.alive/relay.yaml" "$WORLD_ROOT/.alive/relay" << 'PYEOF'
+python3 - "$WORLD_ROOT/.alive/relay.yaml" "$WORLD_ROOT/$RELAY_LOCAL" << 'PYEOF'
 import sys, datetime, subprocess, re, os
 
 config_path = sys.argv[1]
@@ -468,7 +493,33 @@ gh api /user/repository_invitations --jq "
 " 2>&1
 ```
 
-If an invitation exists, accept it (confirm first -- this is an external action):
+Parse the result. If the JSON array is non-empty, extract the invitation ID:
+
+```bash
+# If single invitation, extract ID directly
+INVITATION_ID=$(echo "$INVITATIONS_JSON" | python3 -c "
+import sys, json
+data = json.load(sys.stdin)
+if data:
+    print(data[0]['id'])
+else:
+    print('')
+" 2>/dev/null)
+```
+
+If `INVITATION_ID` is non-empty, accept it (confirm first -- this is an external action):
+
+```
+╭─ 🐿️ accept invitation
+│
+│  Accept collaborator invitation from <relay.sender>
+│  for their relay repo (<relay.repo>)?
+│
+│  ▸ Accept?
+│  1. Yes
+│  2. No -- just import the package
+╰─
+```
 
 ```bash
 gh api "/user/repository_invitations/$INVITATION_ID" -X PATCH 2>&1
@@ -493,11 +544,31 @@ Use the validated `relay.repo` from the manifest (not a hardcoded repo name):
 
 ```bash
 mkdir -p "$WORLD_ROOT/.alive/relay-keys/peers"
+PEER_PEM="$WORLD_ROOT/.alive/relay-keys/peers/<relay.sender>.pem"
+
+# Fetch key -- redirect stderr to console, only stdout goes to file
 gh api "repos/<relay.repo>/contents/keys/<relay.sender>.pem" \
-  --jq '.content' | (base64 -d 2>/dev/null || base64 -D) > "$WORLD_ROOT/.alive/relay-keys/peers/<relay.sender>.pem" 2>&1
+  --jq '.content' 2>/dev/null | (base64 -d 2>/dev/null || base64 -D) > "$PEER_PEM"
+
+# Validate the fetched key file
+if [ -s "$PEER_PEM" ] && head -1 "$PEER_PEM" | grep -q "BEGIN PUBLIC KEY"; then
+  echo "KEY_FETCHED"
+else
+  rm -f "$PEER_PEM"
+  echo "KEY_FAILED"
+fi
 ```
 
-If the key fetch fails (404 or network error), warn but continue -- the peer may not have committed their public key yet.
+If the key fetch fails (404, network error, or invalid key content), warn but continue -- the peer may not have committed their public key yet:
+
+```
+╭─ 🐿️ heads up
+│
+│  Couldn't fetch <relay.sender>'s public key from their relay.
+│  Encryption won't work until their key is available.
+│  Check again later with /alive:relay status.
+╰─
+```
 
 4. **Add sender as peer in relay.yaml** (create relay.yaml if it doesn't exist):
 
@@ -631,10 +702,15 @@ fi
 
 This is a relay package encrypted with the recipient's RSA public key. Auto-decrypt using the local private key -- no passphrase prompt needed.
 
-Locate the private key from relay.yaml:
+Locate the private key by reading `relay.private_key` from `.alive/relay.yaml`:
 
 ```bash
-PRIVATE_KEY="$WORLD_ROOT/.alive/relay-keys/private.pem"
+PRIVATE_KEY_REL=$(grep '^ *private_key:' "$WORLD_ROOT/.alive/relay.yaml" 2>/dev/null | head -1 | sed 's/^.*private_key: *"*\([^"]*\)"*/\1/' | tr -d '[:space:]')
+if [ -n "$PRIVATE_KEY_REL" ]; then
+  PRIVATE_KEY="$WORLD_ROOT/$PRIVATE_KEY_REL"
+else
+  PRIVATE_KEY="$WORLD_ROOT/.alive/relay-keys/private.pem"
+fi
 test -f "$PRIVATE_KEY" && echo "KEY_FOUND" || echo "KEY_MISSING"
 ```
 
@@ -686,41 +762,42 @@ python3 -c '<SAFE_EXTRACT_SCRIPT>' "$STAGING" "$INNER_TAR"
 rm -f "$INNER_TAR" "$STAGING/payload.enc" "$STAGING/payload.key"
 ```
 
-If RSA decryption fails (key unwrap or payload decrypt), the private key may not match (e.g. regenerated keypair, package encrypted for a different key):
+If RSA decryption fails (key unwrap or payload decrypt), the private key does not match. This happens when the local keypair was regenerated after the sender encrypted the package, or the package was encrypted for a different recipient:
 
 ```
 ╭─ 🐿️ RSA decryption failed
 │
 │  Couldn't decrypt with your local RSA key.
-│  The package may have been encrypted for a different key.
+│  The package was encrypted with your RSA public key
+│  but your current private key doesn't match.
 │
-│  ▸ Try with a passphrase instead?
-│  1. Yes -- enter passphrase
-│  2. Cancel
+│  This can happen if you regenerated your keypair.
+│  Ask the sender to re-share the package.
+│
+│  ▸ Abort?
+│  1. Yes -- cancel import
+│  2. No -- I have more context (explain)
 ╰─
 ```
 
-If the human chooses "Yes", fall through to the passphrase decryption flow below (treating it as passphrase-encrypted). Clean up `payload.key` first:
-
-```bash
-rm -f "$STAGING/payload.key"
-```
+Abort the import. Clean up staging. Do NOT offer passphrase fallback -- relay RSA packages have no passphrase and attempting passphrase decryption on RSA-encrypted content will always fail with confusing errors.
 
 If the private key is missing (no relay configured locally):
 
 ```
-╭─ 🐿️ encrypted package
+╭─ 🐿️ encrypted package (RSA)
 │
 │  This package uses RSA encryption (relay transport).
-│  No local RSA private key found at .alive/relay-keys/private.pem.
+│  No local RSA private key found.
 │
-│  ▸ Try with a passphrase instead?
-│  1. Yes -- enter passphrase
-│  2. Cancel
+│  To decrypt relay packages, set up your relay:
+│  /alive:relay setup
+│
+│  Or ask the sender to re-share with passphrase encryption.
 ╰─
 ```
 
-If yes, clean up `payload.key` and fall through to passphrase mode. If cancel, abort.
+Abort the import. Clean up staging.
 
 **If PASSPHRASE_ENCRYPTED (payload.enc only):**
 
