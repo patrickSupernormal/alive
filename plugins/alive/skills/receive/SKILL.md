@@ -81,8 +81,8 @@ The capture skill's inbox scan detects a `.walnut` file in `03_Inputs/` and dele
 Fetch packages from the local relay inbox. Triggered by:
 
 - `/alive:receive --relay` (explicit)
-- `/alive:relay pull` (via the relay skill, which delegates here)
 - The squirrel acting on the session-start hook notification ("N packages waiting on the relay")
+- Future: `/alive:relay pull` or `/alive:relay status` → "Import now?" (relay skill delegates here)
 
 **Relay pull flow:**
 
@@ -116,10 +116,18 @@ If no world root:
 ╰─
 ```
 
-Check relay config:
+Check relay config. A relay is "configured for pull" when relay.yaml exists AND has a non-empty `relay.repo` and a local clone. A partial relay.yaml (from bootstrap, with empty `repo`/`local`) is NOT sufficient for relay pull:
 
 ```bash
-test -f "$WORLD_ROOT/.alive/relay.yaml" && echo "CONFIGURED" || echo "NOT_CONFIGURED"
+if [ ! -f "$WORLD_ROOT/.alive/relay.yaml" ]; then
+  echo "NOT_CONFIGURED"
+elif ! grep -q 'repo: "[^"]' "$WORLD_ROOT/.alive/relay.yaml" 2>/dev/null; then
+  echo "PARTIAL_CONFIG"
+elif [ ! -d "$WORLD_ROOT/.alive/relay/.git" ]; then
+  echo "CLONE_MISSING"
+else
+  echo "CONFIGURED"
+fi
 ```
 
 If not configured:
@@ -131,30 +139,56 @@ If not configured:
 ╰─
 ```
 
-#### 3b. Pull latest from relay clone
+If partial config (from bootstrap, empty repo/local):
 
-Verify the clone exists and pull with credential prompts disabled:
-
-```bash
-# Check clone exists
-if [ ! -d "$WORLD_ROOT/.alive/relay/.git" ]; then
-  echo "CLONE_MISSING"
-else
-  # Prevent git from prompting for credentials (would hang)
-  GIT_TERMINAL_PROMPT=0 git -C "$WORLD_ROOT/.alive/relay" pull --quiet 2>&1
-  echo "PULLED"
-fi
+```
+╭─ 🐿️ relay setup incomplete
+│
+│  You have peer connections saved but no relay configured for pull.
+│  Run /alive:relay setup to create your relay and enable automatic delivery.
+╰─
 ```
 
-If the clone is missing:
+If clone missing:
 
 ```
 ╭─ 🐿️ relay clone missing
 │
-│  The relay clone at .alive/relay/ is missing or broken.
+│  Relay is configured but the local clone is missing.
 │  Run /alive:relay setup to reconfigure.
 ╰─
 ```
+
+#### 3b. Pull latest from relay clone
+
+Pull with credential prompts disabled and check exit code. The clone existence check already happened in 3a:
+
+```bash
+# Prevent git from prompting for credentials (would hang)
+export GIT_TERMINAL_PROMPT=0
+git -C "$WORLD_ROOT/.alive/relay" pull --quiet 2>&1
+
+if [ $? -ne 0 ]; then
+  echo "PULL_FAILED"
+else
+  echo "PULLED"
+fi
+```
+
+If pull fails (network error, auth expired):
+
+```
+╭─ 🐿️ relay sync failed
+│
+│  Couldn't sync with the remote relay (network or auth issue).
+│  Proceeding with local clone state -- packages from before
+│  the last successful sync are still available.
+│
+│  If this persists, check: gh auth status
+╰─
+```
+
+Continue with whatever is in the local clone. Do not abort -- stale-but-present packages are still importable.
 
 Parse the GitHub username from relay.yaml:
 
@@ -388,7 +422,7 @@ If validation fails, skip bootstrap silently and continue with the import. Do no
 
 Run the peer accept flow from alive:relay. The steps:
 
-1. **Check gh auth:**
+1. **Check gh auth and discover local GitHub username:**
 
 ```bash
 gh auth status 2>&1
@@ -396,13 +430,36 @@ gh auth status 2>&1
 
 If not authenticated, guide them to `gh auth login --web` and pause.
 
+After auth check, discover the local GitHub username (needed for relay.yaml and key push):
+
+```bash
+GITHUB_USERNAME=$(gh api user --jq '.login' 2>&1)
+if [ -z "$GITHUB_USERNAME" ] || echo "$GITHUB_USERNAME" | grep -q "error"; then
+  echo "USERNAME_FAILED"
+else
+  echo "GITHUB_USERNAME=$GITHUB_USERNAME"
+fi
+```
+
+If username discovery fails (network error despite auth success), warn and abort bootstrap:
+
+```
+╭─ 🐿️ couldn't detect GitHub username
+│
+│  Authenticated but couldn't fetch your GitHub username.
+│  Skipping relay bootstrap. Try again later with /alive:relay peer accept.
+│
+│  Continuing with package import.
+╰─
+```
+
 2. **Check for pending invitation from the sender:**
 
 Use the validated `relay.repo` to match against pending invitations. Parse the owner and repo name from the manifest's `relay.repo` field:
 
 ```bash
 # Extract owner and repo name from relay.repo (already validated as owner/name format)
-RELAY_OWNER="<relay.sender>"
+RELAY_OWNER=$(echo "<relay.repo>" | cut -d'/' -f1)
 RELAY_REPO_NAME=$(echo "<relay.repo>" | cut -d'/' -f2)
 
 gh api /user/repository_invitations --jq "
@@ -437,7 +494,7 @@ Use the validated `relay.repo` from the manifest (not a hardcoded repo name):
 ```bash
 mkdir -p "$WORLD_ROOT/.alive/relay-keys/peers"
 gh api "repos/<relay.repo>/contents/keys/<relay.sender>.pem" \
-  --jq '.content' | base64 -d > "$WORLD_ROOT/.alive/relay-keys/peers/<relay.sender>.pem" 2>&1
+  --jq '.content' | (base64 -d 2>/dev/null || base64 -D) > "$WORLD_ROOT/.alive/relay-keys/peers/<relay.sender>.pem" 2>&1
 ```
 
 If the key fetch fails (404 or network error), warn but continue -- the peer may not have committed their public key yet.
@@ -1489,6 +1546,8 @@ For capsule imports, offer to open the target walnut (not the capsule directly -
 **Multiple `.walnut` files in `03_Inputs/`:** The inbox scan in capture handles this by listing all items. Each `.walnut` file is processed individually via a separate receive invocation.
 
 **Package contains files outside `_core/`:** The format spec says packages contain `_core/` contents. Files outside `_core/` in the archive are flagged as unexpected in checksum validation (Step 4c, "unlisted file" check) and excluded.
+
+**Relay pull -- inbox path convention:** This skill scans `inbox/<own-username>/` on the local relay clone, matching the sparse checkout configuration and the session-start hook. The share skill's push path must deliver packages to this same location on the recipient's relay. If packages are not appearing despite successful pushes, verify that `alive:share` pushes to `inbox/<recipient-username>/` (not `inbox/<sender-username>/`) on the recipient's relay.
 
 **Relay pull -- empty inbox after git pull:** The hook detected packages but they were cleaned up between hook run and pull (race with another session). Show "relay inbox empty" and exit cleanly.
 
