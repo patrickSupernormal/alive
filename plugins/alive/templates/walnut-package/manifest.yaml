@@ -5,7 +5,7 @@
 # may be omitted. The receiver validates this manifest before
 # importing any content.
 #
-# Format version: 1.0.0
+# Format version: 1.1.0
 # Inspired by BagIt RFC 8493 principles (integrity via checksums, self-describing).
 #
 # NOTE: String fields use {{placeholder}} syntax for substitution by
@@ -21,7 +21,7 @@
 #
 # Receiver blocks on major version mismatch.
 # ──────────────────────────────────────────────────────────────────────
-format_version: "1.0.0"
+format_version: "1.1.0"
 
 # ──────────────────────────────────────────────────────────────────────
 # Source provenance [required]
@@ -59,9 +59,11 @@ created: "{{created_iso8601}}"
 # ──────────────────────────────────────────────────────────────────────
 # Encryption flag [required, boolean]
 #
-# true  => the package was distributed as .walnut.age (age-encrypted)
-# false => the package was distributed as .walnut (unencrypted)
+# true  => the archive contains payload.enc (encrypted content)
+# false => content files are directly accessible in the archive
 #
+# When true, the archive contains payload.enc and optionally payload.key
+# (RSA-wrapped AES key for relay transport). See format-spec.md Section 3.
 # Replace with true when generating an encrypted package.
 # ──────────────────────────────────────────────────────────────────────
 encrypted: false
@@ -91,9 +93,28 @@ description: "{{description}}"
 #   - "safety-brief"
 
 # ──────────────────────────────────────────────────────────────────────
+# Relay provenance [optional, object]
+#
+# Present only when the sender has a relay configured and the package
+# was created via alive:share with relay push. Omitted for manual shares.
+#
+# Enables bootstrap: the recipient's alive:receive detects this field
+# and offers to join the sender's relay, then create their own.
+#
+# Fields:
+#   repo   - GitHub repo for the sender's relay [required, string]
+#   sender - sender's GitHub username on the relay [required, string]
+# ──────────────────────────────────────────────────────────────────────
+# relay:
+#   repo: "{{relay_repo}}"
+#   sender: "{{relay_sender}}"
+
+# ──────────────────────────────────────────────────────────────────────
 # File inventory [required, array of objects]
 #
-# Every file in the archive except manifest.yaml itself.
+# Every file in the archive except manifest.yaml itself and envelope
+# files (payload.enc, payload.key). Envelope files are not content --
+# they are validated structurally, not via checksum.
 # The receiver validates each sha256 checksum before importing.
 #
 # Fields per entry:

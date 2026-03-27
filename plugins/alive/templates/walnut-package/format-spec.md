@@ -1,5 +1,5 @@
 ---
-version: "1.0.0"
+version: "1.1.0"
 type: specification
 description: ".walnut package format -- portable container for sharing walnut context between worlds"
 created: 2026-03-26
@@ -7,7 +7,7 @@ created: 2026-03-26
 
 # .walnut Package Format Specification
 
-**Version:** 1.0.0
+**Version:** 1.1.0
 
 The `.walnut` package is the portable unit of walnut context. It lets two people exchange walnut data via any channel they already use -- email, AirDrop, Slack, USB stick. No daemon, no protocol, no infrastructure. Just a file.
 
@@ -58,9 +58,19 @@ An encrypted `.walnut` file is still a tar.gz, but instead of containing content
 ```
 manifest.yaml      <- cleartext (preview without decrypting)
 payload.enc        <- openssl-encrypted inner tar.gz of the actual content
+payload.key        <- (optional) RSA-wrapped AES-256 key for relay transport
 ```
 
-The manifest is always readable. The content requires the passphrase.
+The manifest is always readable. The content requires either the passphrase (manual share) or the recipient's RSA private key (relay share).
+
+**Two encryption modes:**
+
+| Mode | Files present | Decryption |
+|------|---------------|------------|
+| Passphrase (manual share) | `payload.enc` | Prompt for passphrase, decrypt with PBKDF2-derived key |
+| RSA (relay share) | `payload.enc` + `payload.key` | Unwrap AES key with recipient's RSA private key, then decrypt payload |
+
+The receiver detects which mode by checking for `payload.key`. If present, RSA mode. If absent, passphrase mode.
 
 **Encryption (share side):**
 
@@ -76,7 +86,7 @@ WALNUT_PASSPHRASE="<passphrase>" openssl enc -aes-256-cbc -salt -pbkdf2 -iter 60
 COPYFILE_DISABLE=1 tar -czf <output>.walnut -C <staging-dir> manifest.yaml payload.enc
 ```
 
-**Decryption (receive side):**
+**Decryption (passphrase mode):**
 
 ```bash
 # 1. Extract outer tar.gz (gets manifest.yaml + payload.enc)
@@ -90,9 +100,58 @@ WALNUT_PASSPHRASE="<passphrase>" openssl enc -d -aes-256-cbc -pbkdf2 -iter 60000
 tar -xzf /tmp/inner.tar.gz -C <staging-dir>
 ```
 
-**Detection:** After extracting the outer archive, check for `payload.enc`. If present, the package is encrypted. If absent, content files are directly available.
+**RSA encryption (relay share side):**
+
+```bash
+# 1. Create inner tar.gz of content
+COPYFILE_DISABLE=1 tar -czf /tmp/inner.tar.gz -C <staging-dir> --exclude='manifest.yaml' .
+
+# 2. Generate random AES-256 key
+openssl rand 32 > /tmp/aes.key
+
+# 3. Encrypt payload with AES key (using key file directly)
+openssl enc -aes-256-cbc -salt -pbkdf2 -iter 600000 \
+  -in /tmp/inner.tar.gz -out <staging-dir>/payload.enc -pass file:/tmp/aes.key
+
+# 4. Wrap AES key with recipient's RSA public key (OAEP-SHA256)
+openssl pkeyutl -encrypt -pubin -inkey <recipient-pubkey>.pem \
+  -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \
+  -in /tmp/aes.key -out <staging-dir>/payload.key
+
+# 5. Securely delete the plaintext AES key
+rm -P /tmp/aes.key 2>/dev/null || rm /tmp/aes.key
+
+# 6. Create outer tar.gz (manifest.yaml + payload.enc + payload.key)
+COPYFILE_DISABLE=1 tar -czf <output>.walnut -C <staging-dir> manifest.yaml payload.enc payload.key
+```
+
+**RSA decryption (relay receive side):**
+
+```bash
+# 1. Extract outer tar.gz (gets manifest.yaml + payload.enc + payload.key)
+tar -xzf <package>.walnut -C <staging-dir>
+
+# 2. Unwrap AES key with recipient's RSA private key
+openssl pkeyutl -decrypt -inkey <private-key>.pem \
+  -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \
+  -in <staging-dir>/payload.key -out /tmp/aes.key
+
+# 3. Decrypt payload with AES key
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
+  -in <staging-dir>/payload.enc -out /tmp/inner.tar.gz -pass file:/tmp/aes.key
+
+# 4. Securely delete the plaintext AES key
+rm -P /tmp/aes.key 2>/dev/null || rm /tmp/aes.key
+
+# 5. Extract inner content
+tar -xzf /tmp/inner.tar.gz -C <staging-dir>
+```
+
+**Detection:** After extracting the outer archive, check for `payload.enc`. If present, the package is encrypted. If `payload.key` is also present, use RSA mode. If only `payload.enc`, use passphrase mode. If neither, content files are directly available.
 
 **Passphrase handling:** MUST be passed via `env:WALNUT_PASSPHRASE` (set for one command only). Never as a CLI argument. Never written to disk.
+
+**AES key handling:** The random AES key MUST be securely deleted after wrapping with RSA. Never written to persistent storage.
 
 ---
 
@@ -216,7 +275,7 @@ Every package contains a `manifest.yaml` at the archive root. See the companion 
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `format_version` | string (semver) | Package format version. Currently `"1.0.0"`. |
+| `format_version` | string (semver) | Package format version. Currently `"1.1.0"`. |
 | `source` | object | Provenance: walnut name, session_id, engine, plugin_version. |
 | `scope` | enum | `full`, `capsule`, or `snapshot`. |
 | `created` | string (ISO 8601) | When the package was created. |
@@ -230,14 +289,15 @@ Every package contains a `manifest.yaml` at the archive root. See the companion 
 |-------|------|-------------|
 | `note` | string | Personal message from sender. Shown in bordered block on import. |
 | `capsules` | array of strings | Capsule names included (capsule scope only). |
+| `relay` | object | Relay provenance (`repo`, `sender`). Present when sender has a relay configured. Enables bootstrap -- recipient can join the sender's relay. Added in 1.1.0. |
 
-**Integrity (BagIt-inspired):** The `files` array serves the same role as BagIt's `manifest-sha256.txt`. Every file in the archive (except `manifest.yaml` itself) has a SHA-256 checksum entry. On import, the receiver validates every checksum before proceeding.
+**Integrity (BagIt-inspired):** The `files` array serves the same role as BagIt's `manifest-sha256.txt`. Every file in the archive (except `manifest.yaml` itself and envelope files `payload.enc`/`payload.key`) has a SHA-256 checksum entry. On import, the receiver validates every checksum before proceeding. For encrypted packages, checksums are validated after decryption against the inner content files.
 
 ---
 
 ## 7. Encrypted Package Preview
 
-For encrypted packages, `manifest.yaml` is always cleartext inside the outer archive. This lets the receiver preview the source, scope, note, and description before entering a passphrase. The `files:` array in the manifest lists the content files inside `payload.enc` -- their checksums are validated after decryption, not before.
+For encrypted packages, `manifest.yaml` is always cleartext inside the outer archive. This lets the receiver preview the source, scope, note, and description before entering a passphrase or attempting RSA decryption. The `files:` array in the manifest lists the content files inside `payload.enc` -- their checksums are validated after decryption, not before. Neither `payload.enc` nor `payload.key` appear in the `files:` array -- they are envelope files, not content.
 
 No sidecar files. No separate metadata. One `.walnut` file contains everything.
 
@@ -275,7 +335,7 @@ The receive skill enforces these safety checks before writing any content:
 3. **Manifest validation** -- `format_version` must be present and parseable. Major version must match the installed plugin's supported major version.
 4. **Plugin version check** -- `source.plugin_version` major version must match the installed plugin major version. Block on mismatch with a clear message.
 5. **Checksum validation** -- every file listed in `manifest.files` must match its `sha256` checksum. Any mismatch aborts the import.
-6. **File count validation** -- every file in the extracted archive (except `manifest.yaml`) must have a corresponding entry in `manifest.files`. Unlisted files are flagged and excluded.
+6. **File count validation** -- every file in the extracted archive (except `manifest.yaml` and envelope files `payload.enc`/`payload.key`) must have a corresponding entry in `manifest.files`. Unlisted files are flagged and excluded.
 
 ---
 
@@ -288,6 +348,13 @@ Follows [Semantic Versioning 2.0.0](https://semver.org/):
 - **Patch** bump: documentation clarifications, no schema changes.
 
 The receiver checks `format_version` against its supported range. Current policy: block on major version mismatch, warn on minor version ahead.
+
+**Version history:**
+
+| Version | Changes |
+|---------|---------|
+| 1.0.0 | Initial format. Passphrase encryption, three scope levels, BagIt-inspired checksums. |
+| 1.1.0 | Added optional `relay` manifest field (relay provenance for bootstrap). Added `payload.key` support (RSA-wrapped AES key for relay transport). Backwards-compatible -- receivers on 1.0.0 ignore the unknown optional field and fall back to passphrase prompt when `payload.key` is not understood. |
 
 ---
 
