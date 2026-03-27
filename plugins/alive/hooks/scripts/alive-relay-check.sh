@@ -47,28 +47,33 @@ fi
 export GIT_TERMINAL_PROMPT=0
 
 # git ls-remote with 5-second hard timeout — silent on network failure.
-# Tries: timeout (Linux/coreutils), gtimeout (Homebrew), then perl alarm fallback.
-# The perl fallback sends SIGKILL to the process group for a hard ceiling.
+# Tries: timeout (Linux/coreutils), gtimeout (Homebrew), then python3 subprocess fallback.
+# The python3 fallback is safe — it only kills the child process, not the hook's process group.
 if command -v timeout &>/dev/null; then
   REMOTE_HEAD=$(timeout 5 git ls-remote "$REMOTE_URL" HEAD 2>/dev/null | awk '{print $1}' | head -1)
 elif command -v gtimeout &>/dev/null; then
   REMOTE_HEAD=$(gtimeout 5 git ls-remote "$REMOTE_URL" HEAD 2>/dev/null | awk '{print $1}' | head -1)
 else
-  # Perl alarm fallback — kills entire process group on timeout (hard ceiling)
-  REMOTE_HEAD=$(perl -e '
-    use POSIX ":sys_wait_h";
-    $SIG{ALRM} = sub { kill 9, -$$; exit 124 };
-    alarm(5);
-    my $pid = open(my $fh, "-|", "git", "ls-remote", $ARGV[0], "HEAD") or exit 1;
-    my $line = <$fh>;
-    close $fh;
-    alarm(0);
-    if ($line && $line =~ /^([0-9a-f]+)/) { print $1 }
-  ' "$REMOTE_URL" 2>/dev/null)
+  # python3 subprocess fallback — safe timeout, kills only the child process
+  REMOTE_HEAD=$(python3 -c "
+import subprocess, sys
+try:
+    r = subprocess.run(['git', 'ls-remote', sys.argv[1], 'HEAD'],
+                       capture_output=True, text=True, timeout=5)
+    if r.returncode == 0 and r.stdout.strip():
+        print(r.stdout.split()[0], end='')
+except (subprocess.TimeoutExpired, Exception):
+    pass
+" "$REMOTE_URL" 2>/dev/null)
 fi
 
 # Network failure or timeout — exit silently
 if [ -z "$REMOTE_HEAD" ]; then
+  exit 0
+fi
+
+# Validate REMOTE_HEAD is a valid hex SHA (40 or 64 chars) — reject garbage output
+if ! echo "$REMOTE_HEAD" | grep -qE '^[0-9a-f]{40,64}$'; then
   exit 0
 fi
 
