@@ -183,7 +183,12 @@ This creates a public-facing resource on GitHub. Confirm before proceeding:
 After confirmation:
 
 ```bash
-gh repo create walnut-relay --private --description "Walnut P2P relay inbox" --confirm 2>&1
+RELAY_REPO_DIR="$WORLD_ROOT/.alive/relay/repo"
+mkdir -p "$(dirname "$RELAY_REPO_DIR")"
+
+gh repo create walnut-relay --private \
+  --description "Walnut P2P relay inbox" \
+  --clone "$RELAY_REPO_DIR" 2>&1
 ```
 
 If the repo already exists (exit code non-zero, message contains "already exists"), offer to reuse it:
@@ -197,6 +202,14 @@ If the repo already exists (exit code non-zero, message contains "already exists
 │  1. Yes -- configure as relay
 │  2. Cancel
 ╰─
+```
+
+If reusing, clone it instead:
+
+```bash
+git clone --filter=blob:none --sparse \
+  "https://github.com/$GITHUB_USERNAME/walnut-relay.git" \
+  "$RELAY_REPO_DIR" 2>&1
 ```
 
 ### Step 3 -- Generate RSA-4096 keypair
@@ -237,20 +250,13 @@ If the output does not start with `-rw-------`, warn:
 ╰─
 ```
 
-### Step 4 -- Clone relay repo with sparse checkout
+### Step 4 -- Configure sparse checkout
 
-Clone the relay repo into `.alive/relay/repo/` using sparse checkout. Only the human's own inbox and the `keys/` directory are checked out locally.
+Configure the clone for sparse checkout. Only the human's own inbox and the `keys/` directory are checked out locally:
 
 ```bash
-RELAY_REPO_DIR="$WORLD_ROOT/.alive/relay/repo"
-
-# Clone with sparse checkout (blob filtering for efficiency)
-git clone --filter=blob:none --sparse \
-  "https://github.com/$GITHUB_USERNAME/walnut-relay.git" \
-  "$RELAY_REPO_DIR" 2>&1
-
-# Configure sparse checkout for own inbox + keys
 cd "$RELAY_REPO_DIR" && \
+  git sparse-checkout init --cone && \
   git sparse-checkout set "inbox/$GITHUB_USERNAME" "keys" 2>&1
 ```
 
@@ -283,8 +289,8 @@ inbox/<user>/   Incoming .walnut packages for each participant
 ```
 READMEEOF
 
-# Create .gitkeep for inbox
-touch "inbox/$GITHUB_USERNAME/.gitkeep"
+# Create .gitkeep for inbox with non-empty content
+printf 'Inbox for %s\n' "$GITHUB_USERNAME" > "inbox/$GITHUB_USERNAME/.gitkeep"
 
 # Detect default branch name
 BRANCH=$(git branch --show-current 2>/dev/null)
@@ -507,10 +513,12 @@ gh api "repos/$GITHUB_USERNAME/walnut-relay/collaborators/$PEER_USERNAME" \
 Create the peer's inbox via the GitHub Contents API (avoids sparse checkout conflicts -- the local clone only checks out own inbox + keys):
 
 ```bash
+# Use a non-empty placeholder to avoid empty-content API issues
+GITKEEP_CONTENT=$(printf 'Inbox for %s\n' "$PEER_USERNAME" | base64 | tr -d '\n')
 gh api "repos/$GITHUB_USERNAME/walnut-relay/contents/inbox/$PEER_USERNAME/.gitkeep" \
   -X PUT \
   -f message="Add inbox for $PEER_USERNAME" \
-  -f content="$(echo -n '' | base64)" 2>&1
+  -f content="$GITKEEP_CONTENT" 2>&1
 ```
 
 Then pull the latest into the local clone:
@@ -683,28 +691,25 @@ After confirmation, for each selected invitation:
 gh api "/user/repository_invitations/$INVITATION_ID" -X PATCH 2>&1
 ```
 
-### Step 3 -- Clone the peer's relay with sparse checkout
+### Step 3 -- Fetch peer's public key from their relay
 
-Clone the peer's relay repo to access their public key. Use sparse checkout to only get `keys/`:
-
-```bash
-PEER_RELAY_DIR=$(mktemp -d)
-git clone --filter=blob:none --sparse \
-  "https://github.com/$PEER_OWNER/walnut-relay.git" \
-  "$PEER_RELAY_DIR" 2>&1
-
-cd "$PEER_RELAY_DIR" && git sparse-checkout set "keys" 2>&1
-```
-
-Fetch the peer's public key:
+After accepting, fetch the peer's public key via the Contents API (no full clone needed for just one file):
 
 ```bash
 mkdir -p "$WORLD_ROOT/.alive/relay/peer-keys"
-cp "$PEER_RELAY_DIR/keys/$PEER_OWNER.pem" \
-  "$WORLD_ROOT/.alive/relay/peer-keys/$PEER_OWNER.pem" 2>&1
+gh api "repos/$PEER_OWNER/walnut-relay/contents/keys/$PEER_OWNER.pem" \
+  --jq '.content' | base64 -d > "$WORLD_ROOT/.alive/relay/peer-keys/$PEER_OWNER.pem" 2>&1
+```
 
-# Clean up temp clone
-rm -rf "$PEER_RELAY_DIR"
+If the key file doesn't exist yet (peer hasn't finished setup), warn but continue:
+
+```
+╭─ 🐿️ heads up
+│
+│  <peer-owner>'s public key isn't on their relay yet.
+│  They may not have finished setup. Encryption won't work until
+│  their key is available. Check again with /alive:relay status.
+╰─
 ```
 
 ### Step 4 -- Check if own relay exists
@@ -719,7 +724,7 @@ If the human doesn't have their own relay yet, offer to set one up:
 ╭─ 🐿️ relay setup
 │
 │  You accepted <peer-owner>'s relay invite.
-│  They can now push packages to you (via their relay).
+│  They can push packages to your inbox on their relay.
 │
 │  To send packages back, you need your own relay.
 │
@@ -746,9 +751,49 @@ gh api "repos/$PEER_OWNER/walnut-relay/contents/keys/$GITHUB_USERNAME.pem" \
 
 If the key already exists (API returns 422), the peer already has your key. Skip silently.
 
-### Step 6 -- Update relay.yaml with new peer
+### Step 6 -- Write or update .alive/relay.yaml
 
-If `.alive/relay.yaml` exists, add the inviter to the local peer list (same Python append logic as peer add Step 7), with status `"accepted"`.
+**If the human just ran setup (Step 4 → yes):** relay.yaml already exists. Add the peer to the peer list using the same Python append logic as peer add Step 7, with status `"accepted"`.
+
+**If relay.yaml already existed before this flow:** Add the peer to the existing peer list with status `"accepted"`.
+
+**If the human chose "Later" in Step 4 and no relay.yaml exists:** Write a minimal relay.yaml that records the peer relationship even without a full relay setup. This ensures the peer is tracked:
+
+```bash
+python3 - "$WORLD_ROOT/.alive/relay.yaml" "$GITHUB_USERNAME" "$PEER_OWNER" << 'PYEOF'
+import sys, datetime
+
+config_path = sys.argv[1]
+username = sys.argv[2]
+peer_owner = sys.argv[3]
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+today = datetime.date.today().isoformat()
+
+yaml_content = f"""relay:
+  repo: ""
+  local: ""
+  github_username: "{username}"
+  private_key: ""
+  public_key: ""
+  last_sync: "{now}"
+  last_commit: ""
+peers:
+  - github: "{peer_owner}"
+    name: "{peer_owner}"
+    relay: "{peer_owner}/walnut-relay"
+    person_walnut: ""
+    added: "{today}"
+    status: "accepted"
+"""
+
+with open(config_path, "w") as f:
+    f.write(yaml_content)
+
+print(f"Written: {config_path}")
+PYEOF
+```
+
+This partial config allows `/alive:relay setup` to detect it later and fill in the missing fields while preserving the peer list.
 
 ### Step 7 -- Create or update person walnut
 
@@ -801,7 +846,13 @@ If not configured:
 
 Read `$WORLD_ROOT/.alive/relay.yaml` and parse the relay and peers sections.
 
-### Step 3 -- Check peer invitation status
+### Step 3 -- Pull latest and check peer invitation status
+
+Sync the local clone and update relay metadata:
+
+```bash
+cd "$WORLD_ROOT/.alive/relay/repo" && git pull --quiet 2>&1
+```
 
 For each peer, check if they've accepted by querying the collaborators list:
 
@@ -810,15 +861,54 @@ gh api "repos/$GITHUB_USERNAME/walnut-relay/collaborators" \
   --jq '[.[] | .login]' 2>&1
 ```
 
-Compare against the peer list. Update `status:` in relay.yaml for any peers who have accepted since last check (using the same Python sys.argv pattern).
+Compare against the peer list. Update `status:`, `last_sync`, and `last_commit` in relay.yaml:
+
+```bash
+python3 - "$WORLD_ROOT/.alive/relay.yaml" "$WORLD_ROOT/.alive/relay/repo" << 'PYEOF'
+import sys, datetime, subprocess, re, os
+
+config_path = sys.argv[1]
+repo_dir = sys.argv[2]
+
+with open(config_path) as f:
+    text = f.read()
+
+# Update last_sync
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+text = re.sub(r'(last_sync:\s*)"[^"]*"', f'\\1"{now}"', text)
+
+# Update last_commit
+try:
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo_dir
+    ).decode().strip()
+    text = re.sub(r'(last_commit:\s*)"[^"]*"', f'\\1"{commit}"', text)
+except Exception:
+    pass
+
+with open(config_path, "w") as f:
+    f.write(text)
+
+print("SYNCED")
+PYEOF
+```
+
+To update peer status from pending to accepted, compare the collaborators list against the YAML and update using the Edit tool (read the current status line, replace `"pending"` with `"accepted"` for matching usernames).
 
 ### Step 4 -- Count pending packages
 
 Check the local sparse clone for packages in your inbox:
 
 ```bash
-cd "$WORLD_ROOT/.alive/relay/repo" && git pull --quiet 2>&1
-find "inbox/$GITHUB_USERNAME" -name "*.walnut" -type f 2>/dev/null | wc -l
+find "$WORLD_ROOT/.alive/relay/repo/inbox/$GITHUB_USERNAME" \
+  -name "*.walnut" -type f 2>/dev/null | wc -l
+```
+
+List package details (filename, sender from path, modification date):
+
+```bash
+find "$WORLD_ROOT/.alive/relay/repo/inbox/$GITHUB_USERNAME" \
+  -name "*.walnut" -type f 2>/dev/null -exec ls -lh {} \;
 ```
 
 ### Step 5 -- Verify private key permissions
