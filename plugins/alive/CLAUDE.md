@@ -44,7 +44,7 @@ Do not respond about a walnut without reading its core files. Never guess at fil
 
 ---
 
-## Fourteen Skills
+## Fifteen Skills
 
 ```
 /alive:world      see your world
@@ -61,6 +61,7 @@ Do not respond about a walnut without reading its core files. Never guess at fil
 /alive:map        render the world graph
 /alive:share      package walnut context into a .walnut file for P2P sharing
 /alive:receive    import a .walnut package into the world
+/alive:relay      manage relay for automated P2P delivery
 ```
 
 ---

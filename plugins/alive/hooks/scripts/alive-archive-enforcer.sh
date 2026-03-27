@@ -47,6 +47,13 @@ while IFS= read -r path; do
       ;;
   esac
 
+  # Allow git operations (rm) inside the relay clone directory
+  case "$resolved" in
+    "$WORLD_ROOT"/.alive/relay/*)
+      continue
+      ;;
+  esac
+
   # Check if resolved path is inside the World (protect entire root, not just subdirs)
   case "$resolved" in
     "$WORLD_ROOT"|"$WORLD_ROOT"/*)
