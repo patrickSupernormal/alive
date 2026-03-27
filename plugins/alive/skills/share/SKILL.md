@@ -1,5 +1,5 @@
 ---
-description: "Package walnut context into a portable .walnut file for sharing via any channel -- email, AirDrop, Slack, USB. Supports three scopes (full, capsule, snapshot), sensitivity gating, and optional passphrase encryption."
+description: "Package walnut context into a portable .walnut file for sharing via any channel -- email, AirDrop, Slack, USB. Supports three scopes (full, capsule, snapshot), sensitivity gating, optional passphrase encryption, and relay push for automatic delivery to peers."
 user-invocable: true
 ---
 
@@ -10,6 +10,8 @@ Package walnut context for someone else. The export side of P2P sharing.
 A `.walnut` file is a gzip-compressed tar archive with a manifest. Three scopes: full walnut handoff, capsule-level sharing, or a lightweight snapshot for status updates. Optional passphrase encryption via `openssl` -- fully session-driven, no terminal interaction required.
 
 **Single file output:** A `.walnut` file is always one file. For encrypted packages, the manifest stays cleartext inside the archive (so the recipient can preview source/scope/note before decrypting) and the actual content is an encrypted blob (`payload.enc`) alongside it.
+
+**Relay push (optional):** When a relay is configured (`.alive/relay.yaml` exists with accepted peers), the skill offers to push the package to a peer's relay after packaging. The relay push uses RSA encryption with the peer's public key and the GitHub Contents API -- no passphrases needed. The local `.walnut` file is still created as before; relay is additive.
 
 The skill runs in the current walnut by default. If a walnut name is provided as an argument, operate on that walnut instead -- read its `_core/` before proceeding.
 
@@ -445,6 +447,8 @@ shared:
 
 If the human mentioned who the package is for during the flow (in the personal note, or in conversation), use that name for `to:`. Otherwise default to `"walnut-package"`.
 
+**Note:** Step 8 runs before the relay push (Step 9). If Step 9 later succeeds, update the `method:` field from `"walnut-package"` to `"walnut-relay"` in the same `shared:` entry. This retroactive update is acceptable because the share event hasn't been logged yet.
+
 For full scope: no companion metadata update (the entire walnut is being handed off).
 
 For snapshot scope: no metadata update (read-only briefing, nothing was "shared" in the capsule sense).
@@ -454,6 +458,352 @@ Stash the share event for the log:
 ```
 ╭─ 🐿️ +1 stash (N)
 │  Shared [scope] package: [capsule names or "full walnut"] via walnut-package
+│  → drop?
+╰─
+```
+
+---
+
+### Step 9 -- Relay Push (conditional)
+
+This step runs only when a relay is configured. If `.alive/relay.yaml` does not exist or has no peers, skip to the end -- the local `.walnut` file is the final output.
+
+#### 9a. Check relay configuration
+
+Discover the world root (walk up from cwd looking for `.alive/`), then check for relay config:
+
+```bash
+WORLD_ROOT=""
+CHECK_DIR="$(pwd)"
+while [ "$CHECK_DIR" != "/" ]; do
+  if [ -d "$CHECK_DIR/.alive" ] || [ -d "$CHECK_DIR/01_Archive" ]; then
+    WORLD_ROOT="$CHECK_DIR"
+    break
+  fi
+  CHECK_DIR="$(dirname "$CHECK_DIR")"
+done
+
+if [ -n "$WORLD_ROOT" ] && [ -f "$WORLD_ROOT/.alive/relay.yaml" ]; then
+  echo "RELAY_CONFIGURED"
+else
+  echo "NO_RELAY"
+fi
+```
+
+If `NO_RELAY`, skip the entire step. The local `.walnut` file stands alone.
+
+#### 9b. Parse peers from relay.yaml
+
+Read the peer list and filter to `status: "accepted"` peers only (pending peers cannot receive packages):
+
+```bash
+python3 - "$WORLD_ROOT/.alive/relay.yaml" << 'PYEOF'
+import sys, re
+
+config_path = sys.argv[1]
+with open(config_path) as f:
+    text = f.read()
+
+# Extract peer blocks (each starts with "  - github:")
+blocks = re.split(r'(?=\s+-\s+github:)', text)
+peers = []
+for block in blocks:
+    gh = re.search(r'github:\s*"?([^"\n]+)"?', block)
+    name = re.search(r'name:\s*"?([^"\n]+)"?', block)
+    relay = re.search(r'relay:\s*"?([^"\n]+)"?', block)
+    status = re.search(r'status:\s*"?([^"\n]+)"?', block)
+    if gh and name and relay and status:
+        if status.group(1).strip() == "accepted":
+            peers.append({
+                "github": gh.group(1).strip(),
+                "name": name.group(1).strip(),
+                "relay": relay.group(1).strip()
+            })
+
+if not peers:
+    print("NO_PEERS")
+else:
+    for i, p in enumerate(peers):
+        print(f'{i+1}. {p["name"]} ({p["github"]}) -- relay')
+    print(f"PEER_COUNT={len(peers)}")
+PYEOF
+```
+
+If `NO_PEERS`, skip relay push. Surface a brief note only if the human explicitly mentioned relay during the session, otherwise skip silently.
+
+#### 9c. Present relay push option
+
+```
+╭─ 🐿️ relay
+│
+│  Push to relay for automatic delivery?
+│
+│  ▸ Recipient
+│  1. Ben Flint (benflint) -- relay
+│  2. Carol Smith (carolsmith) -- relay
+│  3. Skip -- share file manually
+╰─
+```
+
+The last option is always "Skip". If only one peer exists, still show the menu -- the human may want to share manually.
+
+If the human skips, the step ends. The local `.walnut` file is the output.
+
+#### 9d. Fetch peer's public key
+
+The peer's RSA public key is cached locally at `.alive/relay-keys/peers/<peer-username>.pem`. If it exists, use it. If not, fetch from the peer's relay repo:
+
+```bash
+PEER_USERNAME="<selected-peer-github>"
+PEER_PUBKEY="$WORLD_ROOT/.alive/relay-keys/peers/$PEER_USERNAME.pem"
+
+if [ -f "$PEER_PUBKEY" ]; then
+  echo "KEY_CACHED"
+else
+  mkdir -p "$WORLD_ROOT/.alive/relay-keys/peers"
+  gh api "repos/$PEER_USERNAME/walnut-relay/contents/keys/$PEER_USERNAME.pem" \
+    --jq '.content' | base64 -d > "$PEER_PUBKEY" 2>&1
+  if [ -f "$PEER_PUBKEY" ] && [ -s "$PEER_PUBKEY" ]; then
+    echo "KEY_FETCHED"
+  else
+    echo "KEY_FAILED"
+  fi
+fi
+```
+
+If `KEY_FAILED`:
+
+```
+╭─ 🐿️ relay push failed
+│
+│  Couldn't fetch <peer-name>'s public key from their relay.
+│  They may not have set up their relay yet.
+│
+│  The package is still at: <local-walnut-path>
+│  Share it manually instead.
+╰─
+```
+
+#### 9e. RSA-encrypt the package for relay
+
+The local `.walnut` file (from Step 6) is the payload. For relay delivery, re-encrypt it with the peer's RSA public key using the format spec's RSA encryption flow.
+
+The `.walnut` file already on disk may be unencrypted or passphrase-encrypted -- it doesn't matter. The relay version is a fresh package with RSA encryption, built from the same staging content.
+
+**Important:** This step re-packages from the original `.walnut` file. The relay `.walnut` contains `manifest.yaml` + `payload.enc` + `payload.key`.
+
+```bash
+RELAY_STAGING=$(mktemp -d)
+WALNUT_FILE="<path-to-local-walnut-file>"
+
+# 1. Extract the local .walnut to get its contents
+tar -xzf "$WALNUT_FILE" -C "$RELAY_STAGING"
+
+# 2. Check if the local package was passphrase-encrypted
+if [ -f "$RELAY_STAGING/payload.enc" ] && [ ! -f "$RELAY_STAGING/payload.key" ]; then
+  # Passphrase-encrypted local package. We need the decrypted content.
+  # Ask the human for the passphrase they set in Step 5 (already in memory).
+  WALNUT_PASSPHRASE="<passphrase-from-step-5>" \
+    openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
+    -in "$RELAY_STAGING/payload.enc" -out /tmp/walnut-relay-inner.tar.gz \
+    -pass env:WALNUT_PASSPHRASE
+  # Extract the decrypted inner content into relay staging
+  rm "$RELAY_STAGING/payload.enc"
+  tar -xzf /tmp/walnut-relay-inner.tar.gz -C "$RELAY_STAGING"
+  rm -f /tmp/walnut-relay-inner.tar.gz
+fi
+
+# 3. If the local package was unencrypted, content files are already in RELAY_STAGING.
+#    Either way, we now have manifest.yaml + content files in RELAY_STAGING.
+
+# 4. Create inner tar.gz of content (everything except manifest.yaml)
+INNER=$(mktemp /tmp/walnut-relay-inner-XXXXX.tar.gz)
+COPYFILE_DISABLE=1 tar -czf "$INNER" -C "$RELAY_STAGING" --exclude='manifest.yaml' .
+
+# 5. Generate random AES-256 key
+AES_KEY=$(mktemp /tmp/walnut-aes-XXXXX.key)
+openssl rand 32 > "$AES_KEY"
+
+# 6. Encrypt payload with AES key
+openssl enc -aes-256-cbc -salt -pbkdf2 -iter 600000 \
+  -in "$INNER" -out "$RELAY_STAGING/payload.enc" -pass "file:$AES_KEY"
+
+# 7. Wrap AES key with peer's RSA public key (OAEP-SHA256)
+openssl pkeyutl -encrypt -pubin -inkey "$PEER_PUBKEY" \
+  -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \
+  -in "$AES_KEY" -out "$RELAY_STAGING/payload.key"
+
+# 8. Securely delete the plaintext AES key and inner tar
+rm -P "$AES_KEY" 2>/dev/null || rm "$AES_KEY"
+rm -f "$INNER"
+
+# 9. Remove content files from relay staging -- only manifest.yaml, payload.enc, payload.key remain
+find "$RELAY_STAGING" -mindepth 1 \
+  -not -name 'manifest.yaml' \
+  -not -name 'payload.enc' \
+  -not -name 'payload.key' \
+  -delete 2>/dev/null
+find "$RELAY_STAGING" -mindepth 1 -type d -empty -delete 2>/dev/null
+```
+
+#### 9f. Update manifest for relay
+
+Before creating the relay `.walnut`, update `manifest.yaml` in `$RELAY_STAGING` to:
+- Set `encrypted: true`
+- Add the `relay:` field with the sender's relay info
+
+Read `relay.yaml` for the sender's repo and username:
+
+```bash
+python3 - "$RELAY_STAGING/manifest.yaml" "$WORLD_ROOT/.alive/relay.yaml" << 'PYEOF'
+import sys, re
+
+manifest_path = sys.argv[1]
+relay_config_path = sys.argv[2]
+
+# Read relay config to get sender info
+with open(relay_config_path) as f:
+    relay_text = f.read()
+
+repo_match = re.search(r'repo:\s*"?([^"\n]+)"?', relay_text)
+username_match = re.search(r'github_username:\s*"?([^"\n]+)"?', relay_text)
+
+if not repo_match or not username_match:
+    print("ERROR: missing relay config fields")
+    sys.exit(1)
+
+relay_repo = repo_match.group(1).strip()
+relay_sender = username_match.group(1).strip()
+
+# Read and update manifest
+with open(manifest_path) as f:
+    manifest = f.read()
+
+# Set encrypted: true
+manifest = re.sub(r'^encrypted:\s*\w+', 'encrypted: true', manifest, flags=re.MULTILINE)
+
+# Add relay field if not present
+if 'relay:' not in manifest:
+    # Insert relay block before the files: section
+    relay_block = (
+        f'\nrelay:\n'
+        f'  repo: "{relay_repo}"\n'
+        f'  sender: "{relay_sender}"\n'
+    )
+    manifest = re.sub(r'(\nfiles:)', relay_block + r'\1', manifest)
+
+with open(manifest_path, 'w') as f:
+    f.write(manifest)
+
+print(f"MANIFEST_UPDATED relay_repo={relay_repo} sender={relay_sender}")
+PYEOF
+```
+
+#### 9g. Create the relay .walnut and push via Contents API
+
+Create the relay `.walnut` archive from the staging directory, then push it to the peer's relay inbox via GitHub Contents API with a UUID filename:
+
+```bash
+# 1. Create the relay .walnut archive
+RELAY_WALNUT=$(mktemp /tmp/walnut-relay-pkg-XXXXX.walnut)
+COPYFILE_DISABLE=1 tar -czf "$RELAY_WALNUT" -C "$RELAY_STAGING" .
+
+# 2. Generate UUID filename (no metadata leakage)
+UUID=$(python3 -c "import uuid; print(uuid.uuid4())")
+
+# 3. Read sender's GitHub username from relay.yaml
+GITHUB_USERNAME=$(python3 -c "
+import sys, re
+with open(sys.argv[1]) as f:
+    text = f.read()
+m = re.search(r'github_username:\s*\"?([^\"\n]+)\"?', text)
+print(m.group(1).strip() if m else '')
+" "$WORLD_ROOT/.alive/relay.yaml")
+
+# 4. Base64-encode the .walnut file for the Contents API
+WALNUT_B64=$(base64 < "$RELAY_WALNUT" | tr -d '\n')
+
+# 5. Get the peer's relay repo
+PEER_RELAY="<peer-relay-from-relay.yaml>"
+
+# 6. Push to peer's relay inbox via Contents API (with retry)
+PUSH_SUCCESS=false
+for ATTEMPT in 1 2 3; do
+  RESPONSE=$(gh api "repos/$PEER_RELAY/contents/inbox/$GITHUB_USERNAME/$UUID.walnut" \
+    -X PUT \
+    -f message="relay: deliver" \
+    -f content="$WALNUT_B64" 2>&1)
+
+  if echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print('OK' if 'content' in d else 'FAIL')" 2>/dev/null | grep -q "OK"; then
+    PUSH_SUCCESS=true
+    break
+  fi
+
+  echo "Attempt $ATTEMPT failed. Retrying..."
+  sleep 1
+done
+
+echo "PUSH_SUCCESS=$PUSH_SUCCESS"
+
+# 7. Clean up
+rm -rf "$RELAY_STAGING" "$RELAY_WALNUT" 2>/dev/null || true
+```
+
+**Commit message:** Always `"relay: deliver"` -- opaque, no walnut names, capsule names, or sender identity.
+
+**Retry logic:** The Contents API can fail due to network issues or rate limits. Retry up to 3 times with a 1-second delay. If all attempts fail, fall back to manual delivery.
+
+If `PUSH_SUCCESS=false`:
+
+```
+╭─ 🐿️ relay push failed
+│
+│  Couldn't push to <peer-name>'s relay after 3 attempts.
+│  The package is still at: <local-walnut-path>
+│  Send it manually, or try /alive:relay status to diagnose.
+╰─
+```
+
+**File size guard:** The GitHub Contents API has a 100 MB limit. Before encoding, check the file size:
+
+```bash
+WALNUT_SIZE=$(stat -f '%z' "$RELAY_WALNUT" 2>/dev/null || stat --format='%s' "$RELAY_WALNUT" 2>/dev/null)
+if [ "$WALNUT_SIZE" -gt 104857600 ]; then
+  echo "TOO_LARGE"
+else
+  echo "SIZE_OK"
+fi
+```
+
+If `TOO_LARGE`:
+
+```
+╭─ 🐿️ package too large for relay
+│
+│  This package is over 100 MB -- too large for the GitHub Contents API.
+│  Share the file manually instead: <local-walnut-path>
+╰─
+```
+
+#### 9h. Confirmation
+
+```
+╭─ 🐿️ relayed
+│
+│  Package pushed to relay for <peer-name>.
+│  They'll see it on their next session start.
+│
+│  Local copy: <local-walnut-path>
+╰─
+```
+
+The local `.walnut` file is always preserved. Relay is additive -- it provides automatic delivery alongside the manual file.
+
+Stash the relay event:
+
+```
+╭─ 🐿️ +1 stash (N)
+│  Relayed [scope] package to <peer-name> (<peer-username>) via relay
 │  → drop?
 ╰─
 ```
@@ -498,3 +848,11 @@ For all scopes:
 **Walnut argument (sharing from non-current walnut):** If the human provides a walnut name or path as an argument, locate it, read its `_core/key.md` and proceed. Don't switch the session's active walnut -- just read from the target.
 
 **Multiple packages same day:** Check for existing files matching the name pattern. Append sequence number (`-2`, `-3`) to avoid overwriting.
+
+**Relay push -- peer's relay doesn't exist:** If the peer hasn't run `/alive:relay setup`, their relay repo won't exist. The Contents API call will fail with a 404. Surface the failure and suggest sharing the file manually.
+
+**Relay push -- peer key missing:** If the peer's public key isn't cached locally and can't be fetched from their relay, skip relay push and explain the issue. This usually means the peer hasn't committed their public key yet.
+
+**Relay push -- offline:** If `gh api` fails with a connection error, skip relay push silently. The local `.walnut` file is always available.
+
+**Relay push -- only pending peers:** If all peers have `status: "pending"` (invitations not yet accepted), skip the relay push step. Pending peers don't have push access to the relay repo yet.
