@@ -1,5 +1,5 @@
 ---
-description: "Import a .walnut package into the world. Detects encryption, validates integrity (checksums + path safety), previews contents, and routes into a new walnut (full scope), existing walnut capsules (capsule scope), or read-only view (snapshot scope)."
+description: "Import a .walnut package into the world. Supports direct file import, inbox scan delegation, and relay pull (automatic fetch from git-based relay inbox). Detects encryption (passphrase or RSA), validates integrity (checksums + path safety), previews contents, and routes into a new walnut (full scope), existing walnut capsules (capsule scope), or read-only view (snapshot scope). Detects relay bootstrap invitations in manifests."
 user-invocable: true
 ---
 
@@ -10,6 +10,8 @@ Import walnut context from someone else. The import side of P2P sharing.
 A `.walnut` file is always a single gzip-compressed tar archive. Three scopes: full walnut handoff (creates new walnut), capsule-level import (into existing walnut), or a snapshot for read-only viewing. Handles encryption detection and integrity validation before writing anything.
 
 **Encrypted packages** contain `manifest.yaml` (cleartext, for preview) alongside `payload.enc` (the encrypted content). Decryption uses `openssl` -- fully session-driven, no terminal interaction. **Unencrypted packages** contain `manifest.yaml` alongside the content files directly.
+
+**Relay packages** are pulled from the local relay inbox (`.alive/relay/inbox/<username>/`). They use RSA encryption (`payload.enc` + `payload.key`) and are auto-decrypted using the local private key -- no passphrase prompt needed. When a manually-received package contains a `relay:` field in its manifest, the skill offers to bootstrap a relay connection with the sender.
 
 ---
 
@@ -32,7 +34,7 @@ The squirrel MUST read both files before importing. Do not reconstruct the manif
 
 ## Entry Points
 
-Two ways this skill gets invoked:
+Three ways this skill gets invoked:
 
 ### 1. Direct invocation
 
@@ -55,6 +57,199 @@ If no path argument, ask:
 ### 2. Inbox scan delegation
 
 The capture skill's inbox scan detects a `.walnut` file in `03_Inputs/` and delegates here. When delegated, the file path is already known -- skip the path prompt and proceed to Step 1.
+
+### 3. Relay pull
+
+Fetch packages from the local relay inbox. Triggered by:
+
+- `/alive:receive --relay` (explicit)
+- `/alive:relay pull` (via the relay skill, which delegates here)
+- The squirrel acting on the session-start hook notification ("N packages waiting on the relay")
+
+**Relay pull flow:**
+
+#### 3a. Discover world root and validate relay config
+
+```bash
+WORLD_ROOT=""
+CHECK_DIR="$(pwd)"
+while [ "$CHECK_DIR" != "/" ]; do
+  if [ -d "$CHECK_DIR/.alive" ] || [ -d "$CHECK_DIR/01_Archive" ]; then
+    WORLD_ROOT="$CHECK_DIR"
+    break
+  fi
+  CHECK_DIR="$(dirname "$CHECK_DIR")"
+done
+
+if [ -z "$WORLD_ROOT" ]; then
+  echo "NO_WORLD_ROOT"
+else
+  echo "WORLD_ROOT=$WORLD_ROOT"
+fi
+```
+
+If no world root:
+
+```
+╭─ 🐿️ no world found
+│
+│  Can't find the ALIVE world root.
+│  Run this from inside your world directory.
+╰─
+```
+
+Check relay config:
+
+```bash
+test -f "$WORLD_ROOT/.alive/relay.yaml" && echo "CONFIGURED" || echo "NOT_CONFIGURED"
+```
+
+If not configured:
+
+```
+╭─ 🐿️ no relay
+│
+│  No relay configured. Run /alive:relay setup to create one.
+╰─
+```
+
+#### 3b. Pull latest from relay clone
+
+```bash
+cd "$WORLD_ROOT/.alive/relay" && git pull --quiet 2>&1
+```
+
+Parse the GitHub username from relay.yaml:
+
+```bash
+GITHUB_USERNAME=$(grep '^ *github_username:' "$WORLD_ROOT/.alive/relay.yaml" | head -1 | sed 's/^.*github_username: *"*\([^"]*\)"*/\1/' | tr -d '[:space:]')
+```
+
+#### 3c. List packages in own inbox
+
+```bash
+find "$WORLD_ROOT/.alive/relay/inbox/$GITHUB_USERNAME" \
+  -name "*.walnut" -type f 2>/dev/null
+```
+
+If no packages:
+
+```
+╭─ 🐿️ relay inbox empty
+│
+│  No packages in your relay inbox.
+╰─
+```
+
+If packages found, present them:
+
+```
+╭─ 🐿️ relay packages
+│
+│  <N> packages in your relay inbox:
+│  1. <filename> (<size>)
+│  2. <filename> (<size>)
+│
+│  ▸ Import?
+│  1. Import all
+│  2. Pick specific packages
+│  3. Cancel
+╰─
+```
+
+#### 3d. Process each package
+
+For each selected package, set a flag `RELAY_SOURCE=true` in conversation state along with the package file path. Then feed into the existing flow starting at Step 1 (extract + read manifest).
+
+The `RELAY_SOURCE` flag tells Step 2 to attempt RSA auto-decryption before falling back to passphrase prompt. It also tells Step 8 to perform git cleanup instead of filesystem archival.
+
+Process packages sequentially. Between packages, confirm continuation:
+
+```
+╭─ 🐿️ next package
+│
+│  Imported 1 of <N>. Continue with <next-filename>?
+│  1. Yes
+│  2. Skip this one
+│  3. Stop -- import the rest later
+╰─
+```
+
+#### 3e. Git cleanup after successful import
+
+After each package is successfully imported via the full receive flow (Steps 1-9), clean up the relay inbox. Use git operations (not shell deletion) so the archive enforcer is not triggered:
+
+```bash
+cd "$WORLD_ROOT/.alive/relay"
+
+# Remove the imported .walnut file from the inbox
+git rm "inbox/$GITHUB_USERNAME/<package-filename>" 2>&1
+
+# Commit and push the cleanup
+git commit -m "relay: received" 2>&1
+git push 2>&1
+```
+
+If multiple packages are imported in sequence, batch the git cleanup -- remove all successfully imported packages in a single commit:
+
+```bash
+cd "$WORLD_ROOT/.alive/relay"
+
+# Remove all imported packages
+git rm "inbox/$GITHUB_USERNAME/<package-1>" 2>&1
+git rm "inbox/$GITHUB_USERNAME/<package-2>" 2>&1
+
+# Single commit for all removals
+git commit -m "relay: received" 2>&1
+git push 2>&1
+```
+
+**Commit message:** Always `"relay: received"` -- opaque, no walnut names or sender identity in the commit message.
+
+If the push fails (network error), warn but don't block:
+
+```
+╭─ 🐿️ heads up
+│
+│  Import succeeded but couldn't push cleanup to the relay.
+│  The packages are still in your remote inbox -- they'll be
+│  cleaned up next time. Run: cd .alive/relay && git push
+╰─
+```
+
+#### 3f. Update relay.yaml after pull
+
+After processing all packages, update `last_sync` and `last_commit` in relay.yaml:
+
+```bash
+python3 - "$WORLD_ROOT/.alive/relay.yaml" "$WORLD_ROOT/.alive/relay" << 'PYEOF'
+import sys, datetime, subprocess, re, os
+
+config_path = sys.argv[1]
+repo_dir = sys.argv[2]
+
+with open(config_path) as f:
+    text = f.read()
+
+# Update last_sync
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+text = re.sub(r'(last_sync:\s*)"[^"]*"', f'\\1"{now}"', text)
+
+# Update last_commit
+try:
+    commit = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo_dir
+    ).decode().strip()
+    text = re.sub(r'(last_commit:\s*)"[^"]*"', f'\\1"{commit}"', text)
+except Exception:
+    pass
+
+with open(config_path, "w") as f:
+    f.write(text)
+
+print("SYNCED")
+PYEOF
+```
 
 ---
 
@@ -95,19 +290,284 @@ After extraction, read `$STAGING/manifest.yaml`. This is always cleartext, even 
 ╰─
 ```
 
+#### Bootstrap detection (relay invitation)
+
+After reading the manifest and showing the preview, check for the optional `relay:` field. This field is present when the sender has a relay configured and indicates the package was created via a relay-connected share.
+
+**Skip this check if:**
+- The package was pulled from the relay (entry point 3 / `RELAY_SOURCE=true`) -- the connection already exists
+- A local relay is already configured and the sender is already a peer
+
+**If `relay:` is present and no local relay is configured** (no `.alive/relay.yaml`), or the sender is not in the peer list:
+
+```
+╭─ 🐿️ relay invitation
+│
+│  This package includes a relay connection:
+│  <relay.repo> (from <relay.sender>)
+│
+│  Connecting means future packages arrive automatically
+│  via git instead of manual email.
+│
+│  ▸ Connect to this relay?
+│  1. Yes -- join the relay
+│  2. No -- just import this package
+╰─
+```
+
+**If the human chooses "Yes -- join the relay":**
+
+Run the peer accept flow from alive:relay. The steps:
+
+1. **Check gh auth:**
+
+```bash
+gh auth status 2>&1
+```
+
+If not authenticated, guide them to `gh auth login --web` and pause.
+
+2. **Check for pending invitation from the sender:**
+
+```bash
+gh api /user/repository_invitations --jq '
+  [.[] | select(.repository.name == "walnut-relay" and .repository.owner.login == "<relay.sender>") |
+   {id: .id, owner: .repository.owner.login, repo: .repository.full_name}]
+' 2>&1
+```
+
+If an invitation exists, accept it:
+
+```bash
+gh api "/user/repository_invitations/$INVITATION_ID" -X PATCH 2>&1
+```
+
+If no invitation exists, inform the human:
+
+```
+╭─ 🐿️ no invitation yet
+│
+│  No pending relay invitation from <relay.sender>.
+│  They may not have invited you yet. Ask them to run:
+│  /alive:relay peer add <your-github-username>
+│
+│  Continuing with package import.
+╰─
+```
+
+3. **Fetch sender's public key from their relay:**
+
+```bash
+mkdir -p "$WORLD_ROOT/.alive/relay-keys/peers"
+gh api "repos/<relay.sender>/walnut-relay/contents/keys/<relay.sender>.pem" \
+  --jq '.content' | base64 -d > "$WORLD_ROOT/.alive/relay-keys/peers/<relay.sender>.pem" 2>&1
+```
+
+4. **Add sender as peer in relay.yaml** (create relay.yaml if it doesn't exist):
+
+If no relay.yaml exists, write a minimal config recording the peer relationship:
+
+```bash
+python3 - "$WORLD_ROOT/.alive/relay.yaml" "$GITHUB_USERNAME" "<relay.sender>" << 'PYEOF'
+import sys, datetime
+
+config_path = sys.argv[1]
+username = sys.argv[2]
+peer_owner = sys.argv[3]
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+today = datetime.date.today().isoformat()
+
+yaml_content = f"""relay:
+  repo: ""
+  local: ""
+  github_username: "{username}"
+  private_key: ""
+  public_key: ""
+  last_sync: "{now}"
+  last_commit: ""
+peers:
+  - github: "{peer_owner}"
+    name: "{peer_owner}"
+    relay: "{peer_owner}/walnut-relay"
+    person_walnut: ""
+    added: "{today}"
+    status: "accepted"
+"""
+
+with open(config_path, "w") as f:
+    f.write(yaml_content)
+
+print(f"Written: {config_path}")
+PYEOF
+```
+
+If relay.yaml already exists but the sender isn't a peer, append them to the peer list using the same Python append logic from the relay skill.
+
+5. **Create or update sender's person walnut** at `02_Life/people/<sender-slug>/` with `github:` and `relay:` fields in key.md. Same as relay peer add Step 9.
+
+6. **Offer to create own relay:**
+
+```
+╭─ 🐿️ relay setup
+│
+│  You've joined <relay.sender>'s relay.
+│  They can push packages to you automatically.
+│
+│  To send packages back via relay, you need your own.
+│
+│  ▸ Create your relay now?
+│  1. Yes -- run /alive:relay setup
+│  2. Later -- I'll set it up when I need to send
+╰─
+```
+
+If yes, run the full `/alive:relay setup` flow. After setup completes, push own public key to the sender's relay:
+
+```bash
+PUBLIC_KEY_B64=$(base64 < "$WORLD_ROOT/.alive/relay-keys/public.pem" | tr -d '\n')
+gh api "repos/<relay.sender>/walnut-relay/contents/keys/$GITHUB_USERNAME.pem" \
+  -X PUT \
+  -f message="Add public key for $GITHUB_USERNAME" \
+  -f content="$PUBLIC_KEY_B64" 2>&1
+```
+
+7. **Confirm and continue with import:**
+
+```
+╭─ 🐿️ relay connected
+│
+│  Connected to <relay.sender>'s relay.
+│  Future packages will arrive automatically.
+│
+│  Continuing with package import...
+╰─
+```
+
+Stash the bootstrap event:
+
+```
+╭─ 🐿️ +1 stash (N)
+│  Joined relay from <relay.sender> via bootstrap -- <relay.repo>
+│  → drop?
+╰─
+```
+
+After bootstrap (or if the human chose "No"), continue to Step 2.
+
 ---
 
 ### Step 2 -- Encryption Detection and Decryption
 
-Check if the extracted staging directory contains `payload.enc`. If yes, the content is encrypted.
+Check if the extracted staging directory contains `payload.enc`. If yes, the content is encrypted. Also check for `payload.key` to determine the encryption mode.
 
 ```bash
-test -f "$STAGING/payload.enc" && echo "ENCRYPTED" || echo "CLEARTEXT"
+if [ -f "$STAGING/payload.enc" ] && [ -f "$STAGING/payload.key" ]; then
+  echo "RSA_ENCRYPTED"
+elif [ -f "$STAGING/payload.enc" ]; then
+  echo "PASSPHRASE_ENCRYPTED"
+else
+  echo "CLEARTEXT"
+fi
 ```
 
 **If CLEARTEXT:** The content files are already extracted alongside the manifest. Proceed to Step 3.
 
-**If ENCRYPTED:**
+**If RSA_ENCRYPTED (payload.enc + payload.key):**
+
+This is a relay package encrypted with the recipient's RSA public key. Auto-decrypt using the local private key -- no passphrase prompt needed.
+
+Locate the private key from relay.yaml:
+
+```bash
+PRIVATE_KEY="$WORLD_ROOT/.alive/relay-keys/private.pem"
+test -f "$PRIVATE_KEY" && echo "KEY_FOUND" || echo "KEY_MISSING"
+```
+
+If the private key is found, decrypt:
+
+```bash
+# 1. Unwrap AES key with local RSA private key
+AES_KEY=$(mktemp "/tmp/walnut-aes-XXXXXXXX.key")
+openssl pkeyutl -decrypt -inkey "$PRIVATE_KEY" \
+  -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \
+  -in "$STAGING/payload.key" -out "$AES_KEY"
+
+if [ $? -ne 0 ]; then
+  echo "RSA_DECRYPT_FAILED"
+  rm -f "$AES_KEY"
+else
+  echo "AES_KEY_UNWRAPPED"
+fi
+```
+
+If key unwrap succeeds, decrypt the payload:
+
+```bash
+# 2. Decrypt payload with unwrapped AES key
+INNER_TAR=$(mktemp "/tmp/walnut-inner-XXXXXXXX.tar.gz")
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
+  -in "$STAGING/payload.enc" \
+  -out "$INNER_TAR" \
+  -pass "file:$AES_KEY"
+
+if [ $? -ne 0 ]; then
+  echo "PAYLOAD_DECRYPT_FAILED"
+  rm -f "$INNER_TAR"
+else
+  echo "DECRYPTED"
+fi
+
+# 3. Securely delete the plaintext AES key
+rm -P "$AES_KEY" 2>/dev/null || rm "$AES_KEY"
+```
+
+On success, extract the inner archive and clean up:
+
+```bash
+# Extract inner archive content into staging using safe extraction
+python3 -c '<SAFE_EXTRACT_SCRIPT>' "$STAGING" "$INNER_TAR"
+
+# Clean up: remove payload.enc, payload.key, and inner tar
+rm -f "$INNER_TAR" "$STAGING/payload.enc" "$STAGING/payload.key"
+```
+
+If RSA decryption fails (key unwrap or payload decrypt), the private key may not match (e.g. regenerated keypair, package encrypted for a different key):
+
+```
+╭─ 🐿️ RSA decryption failed
+│
+│  Couldn't decrypt with your local RSA key.
+│  The package may have been encrypted for a different key.
+│
+│  ▸ Try with a passphrase instead?
+│  1. Yes -- enter passphrase
+│  2. Cancel
+╰─
+```
+
+If the human chooses "Yes", fall through to the passphrase decryption flow below (treating it as passphrase-encrypted). Clean up `payload.key` first:
+
+```bash
+rm -f "$STAGING/payload.key"
+```
+
+If the private key is missing (no relay configured locally):
+
+```
+╭─ 🐿️ encrypted package
+│
+│  This package uses RSA encryption (relay transport).
+│  No local RSA private key found at .alive/relay-keys/private.pem.
+│
+│  ▸ Try with a passphrase instead?
+│  1. Yes -- enter passphrase
+│  2. Cancel
+╰─
+```
+
+If yes, clean up `payload.key` and fall through to passphrase mode. If cancel, abort.
+
+**If PASSPHRASE_ENCRYPTED (payload.enc only):**
 
 Collect the passphrase through the session:
 
@@ -162,9 +622,11 @@ python3 -c '<SAFE_EXTRACT_SCRIPT>' "$STAGING" "$INNER_TAR"
 rm -f "$INNER_TAR" "$STAGING/payload.enc"
 ```
 
-After this step, the staging directory looks the same whether the package was encrypted or not: `manifest.yaml` + content files. All subsequent steps are identical.
+After this step, the staging directory looks the same regardless of encryption mode: `manifest.yaml` + content files. All subsequent steps are identical.
 
 **Passphrase handling:** The passphrase MUST be passed via `env:` (environment variable), never as a CLI argument (visible in `ps`) or written to a file. The `WALNUT_PASSPHRASE=... openssl ...` syntax sets it for that single command only.
+
+**AES key handling:** The unwrapped AES key MUST be securely deleted after use. `rm -P` overwrites before deletion on macOS. Falls back to `rm` on Linux.
 
 ---
 
@@ -770,7 +1232,9 @@ Imported from .walnut package: <original-filename>
 
 ### Step 8 -- Cleanup
 
-Move the original `.walnut` file from its current location to the archive. If the file came from `03_Inputs/`, move it to `01_Archive/03_Inputs/`:
+**If relay-sourced (`RELAY_SOURCE=true`):** Skip the file archival below. Relay package cleanup (git rm + push) is handled by entry point 3e after the full receive flow completes. Only clean up the staging directory.
+
+**If not relay-sourced:** Move the original `.walnut` file from its current location to the archive. If the file came from `03_Inputs/`, move it to `01_Archive/03_Inputs/`:
 
 Only auto-archive files that came from `03_Inputs/`. Files from other locations (e.g. Desktop) are left where the human put them.
 
@@ -927,6 +1391,32 @@ For capsule imports, offer to open the target walnut (not the capsule directly -
 **Multiple `.walnut` files in `03_Inputs/`:** The inbox scan in capture handles this by listing all items. Each `.walnut` file is processed individually via a separate receive invocation.
 
 **Package contains files outside `_core/`:** The format spec says packages contain `_core/` contents. Files outside `_core/` in the archive are flagged as unexpected in checksum validation (Step 4c, "unlisted file" check) and excluded.
+
+**Relay pull -- empty inbox after git pull:** The hook detected packages but they were cleaned up between hook run and pull (race with another session). Show "relay inbox empty" and exit cleanly.
+
+**Relay pull -- git push cleanup fails:** The import succeeded but cleanup push failed (network error, auth expired). Warn but don't block. The packages stay in the remote inbox until the next successful push.
+
+**Relay pull -- private key regenerated:** If the local private key was regenerated after a peer encrypted a package with the old public key, RSA decryption fails. The fallback to passphrase mode won't work either (relay packages don't have passphrases). The package is unrecoverable -- inform the human to ask the sender to re-share.
+
+**Relay pull -- unknown sender:** If a package appears in the relay inbox from someone not in the peer list, warn before processing:
+
+```
+╭─ 🐿️ unknown sender
+│
+│  Package from unknown sender in relay inbox: <filename>
+│  Anyone with push access to your relay can deliver packages.
+│
+│  ▸ Process or skip?
+│  1. Process -- import the package
+│  2. Skip -- leave it in the inbox
+╰─
+```
+
+**Bootstrap -- sender hasn't invited yet:** The relay: field is in the manifest but no pending GitHub invitation exists. Inform the human and continue with the import. They can run `/alive:relay peer accept` later when the invitation arrives.
+
+**Bootstrap -- offline during join:** If `gh api` calls fail during bootstrap, skip the relay join silently and continue with the package import. The human can join later.
+
+**RSA decryption -- payload.key present but not from relay:** Theoretically impossible in normal operation (only the share skill creates payload.key), but handle gracefully. If RSA decryption fails, offer passphrase fallback.
 
 ---
 
