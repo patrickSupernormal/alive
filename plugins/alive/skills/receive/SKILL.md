@@ -26,7 +26,25 @@ templates/walnut-package/manifest.yaml     -- manifest template with field docs
 
 The squirrel MUST read both files before importing. Do not reconstruct the manifest schema from memory. Do NOT spawn an Explore agent or search for these files -- the paths above are authoritative.
 
-**World root discovery:** The world root is the ALIVE folder containing `01_Archive/`, `02_Life/`, `03_Inputs/`, `04_Ventures/`, `05_Experiments/`. Discover it by walking up from the current walnut's path or by reading the `.alive/` directory location. All target paths for import MUST resolve inside this root.
+**World root discovery (all entry points):** The world root is the ALIVE folder containing `01_Archive/`, `02_Life/`, `03_Inputs/`, `04_Ventures/`, `05_Experiments/`. Discover it by walking up from the current walnut's path or by reading the `.alive/` directory location. All target paths for import MUST resolve inside this root. The squirrel MUST discover and persist `WORLD_ROOT` in conversation state before processing any package -- it is needed by bootstrap detection (Step 1), RSA decryption (Step 2), target selection (Step 6), and cleanup (Step 8).
+
+```bash
+WORLD_ROOT=""
+CHECK_DIR="$(pwd)"
+while [ "$CHECK_DIR" != "/" ]; do
+  if [ -d "$CHECK_DIR/.alive" ] || [ -d "$CHECK_DIR/01_Archive" ]; then
+    WORLD_ROOT="$CHECK_DIR"
+    break
+  fi
+  CHECK_DIR="$(dirname "$CHECK_DIR")"
+done
+
+if [ -z "$WORLD_ROOT" ]; then
+  echo "NO_WORLD_ROOT"
+else
+  echo "WORLD_ROOT=$WORLD_ROOT"
+fi
+```
 
 **Installed plugin version:** Read the plugin version from `walnut.manifest.yaml` at the plugin root. If the version cannot be determined, warn the human and skip the plugin version compatibility check in Step 4b -- do not assume a default version.
 
@@ -115,8 +133,27 @@ If not configured:
 
 #### 3b. Pull latest from relay clone
 
+Verify the clone exists and pull with credential prompts disabled:
+
 ```bash
-cd "$WORLD_ROOT/.alive/relay" && git pull --quiet 2>&1
+# Check clone exists
+if [ ! -d "$WORLD_ROOT/.alive/relay/.git" ]; then
+  echo "CLONE_MISSING"
+else
+  # Prevent git from prompting for credentials (would hang)
+  GIT_TERMINAL_PROMPT=0 git -C "$WORLD_ROOT/.alive/relay" pull --quiet 2>&1
+  echo "PULLED"
+fi
+```
+
+If the clone is missing:
+
+```
+╭─ 🐿️ relay clone missing
+│
+│  The relay clone at .alive/relay/ is missing or broken.
+│  Run /alive:relay setup to reconfigure.
+╰─
 ```
 
 Parse the GitHub username from relay.yaml:
@@ -177,31 +214,27 @@ Process packages sequentially. Between packages, confirm continuation:
 
 #### 3e. Git cleanup after successful import
 
-After each package is successfully imported via the full receive flow (Steps 1-9), clean up the relay inbox. Use git operations (not shell deletion) so the archive enforcer is not triggered:
-
-```bash
-cd "$WORLD_ROOT/.alive/relay"
-
-# Remove the imported .walnut file from the inbox
-git rm "inbox/$GITHUB_USERNAME/<package-filename>" 2>&1
-
-# Commit and push the cleanup
-git commit -m "relay: received" 2>&1
-git push 2>&1
-```
+After each package is successfully imported via the full receive flow (Steps 1-9), clean up the relay inbox. Use git operations (not shell deletion) so the archive enforcer is not triggered.
 
 If multiple packages are imported in sequence, batch the git cleanup -- remove all successfully imported packages in a single commit:
 
 ```bash
 cd "$WORLD_ROOT/.alive/relay"
 
-# Remove all imported packages
+# Prevent git from prompting for credentials
+export GIT_TERMINAL_PROMPT=0
+
+# Remove each successfully imported package
 git rm "inbox/$GITHUB_USERNAME/<package-1>" 2>&1
 git rm "inbox/$GITHUB_USERNAME/<package-2>" 2>&1
 
-# Single commit for all removals
-git commit -m "relay: received" 2>&1
-git push 2>&1
+# Only commit and push if there are staged removals
+if ! git diff --cached --quiet 2>/dev/null; then
+  git commit -m "relay: received" 2>&1
+  git push 2>&1
+else
+  echo "NO_CHANGES_TO_COMMIT"
+fi
 ```
 
 **Commit message:** Always `"relay: received"` -- opaque, no walnut names or sender identity in the commit message.
@@ -298,7 +331,41 @@ After reading the manifest and showing the preview, check for the optional `rela
 - The package was pulled from the relay (entry point 3 / `RELAY_SOURCE=true`) -- the connection already exists
 - A local relay is already configured and the sender is already a peer
 
-**If `relay:` is present and no local relay is configured** (no `.alive/relay.yaml`), or the sender is not in the peer list:
+**Validate manifest relay fields before use (untrusted input):**
+
+The `relay.sender` and `relay.repo` fields come from the manifest, which is untrusted. Before using them in filesystem paths, API calls, or git operations, validate strictly:
+
+```bash
+python3 -c "
+import sys, re
+sender = sys.argv[1]
+repo = sys.argv[2]
+
+# Validate sender: GitHub username pattern (alphanumeric + hyphens, 1-39 chars)
+if not re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?', sender):
+    print('INVALID_SENDER')
+    sys.exit(0)
+
+# Validate repo: must be owner/name format, both parts alphanumeric + hyphens
+parts = repo.split('/')
+if len(parts) != 2:
+    print('INVALID_REPO')
+    sys.exit(0)
+owner, name = parts
+if not re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?', owner):
+    print('INVALID_REPO')
+    sys.exit(0)
+if not re.fullmatch(r'[a-zA-Z0-9._-]{1,100}', name):
+    print('INVALID_REPO')
+    sys.exit(0)
+
+print('VALID')
+" "<relay.sender>" "<relay.repo>"
+```
+
+If validation fails, skip bootstrap silently and continue with the import. Do not surface the relay invitation prompt for malformed values.
+
+**If `relay:` is present, validated, and no local relay is configured** (no `.alive/relay.yaml`), or the sender is not in the peer list:
 
 ```
 ╭─ 🐿️ relay invitation
@@ -306,8 +373,10 @@ After reading the manifest and showing the preview, check for the optional `rela
 │  This package includes a relay connection:
 │  <relay.repo> (from <relay.sender>)
 │
-│  Connecting means future packages arrive automatically
-│  via git instead of manual email.
+│  Joining means you can accept their relay invitation
+│  and set up keys for encrypted package exchange.
+│  To receive packages automatically, you'll also need
+│  your own relay (/alive:relay setup).
 │
 │  ▸ Connect to this relay?
 │  1. Yes -- join the relay
@@ -329,14 +398,20 @@ If not authenticated, guide them to `gh auth login --web` and pause.
 
 2. **Check for pending invitation from the sender:**
 
+Use the validated `relay.repo` to match against pending invitations. Parse the owner and repo name from the manifest's `relay.repo` field:
+
 ```bash
-gh api /user/repository_invitations --jq '
-  [.[] | select(.repository.name == "walnut-relay" and .repository.owner.login == "<relay.sender>") |
+# Extract owner and repo name from relay.repo (already validated as owner/name format)
+RELAY_OWNER="<relay.sender>"
+RELAY_REPO_NAME=$(echo "<relay.repo>" | cut -d'/' -f2)
+
+gh api /user/repository_invitations --jq "
+  [.[] | select(.repository.name == \"$RELAY_REPO_NAME\" and .repository.owner.login == \"$RELAY_OWNER\") |
    {id: .id, owner: .repository.owner.login, repo: .repository.full_name}]
-' 2>&1
+" 2>&1
 ```
 
-If an invitation exists, accept it:
+If an invitation exists, accept it (confirm first -- this is an external action):
 
 ```bash
 gh api "/user/repository_invitations/$INVITATION_ID" -X PATCH 2>&1
@@ -357,25 +432,34 @@ If no invitation exists, inform the human:
 
 3. **Fetch sender's public key from their relay:**
 
+Use the validated `relay.repo` from the manifest (not a hardcoded repo name):
+
 ```bash
 mkdir -p "$WORLD_ROOT/.alive/relay-keys/peers"
-gh api "repos/<relay.sender>/walnut-relay/contents/keys/<relay.sender>.pem" \
+gh api "repos/<relay.repo>/contents/keys/<relay.sender>.pem" \
   --jq '.content' | base64 -d > "$WORLD_ROOT/.alive/relay-keys/peers/<relay.sender>.pem" 2>&1
 ```
 
+If the key fetch fails (404 or network error), warn but continue -- the peer may not have committed their public key yet.
+
 4. **Add sender as peer in relay.yaml** (create relay.yaml if it doesn't exist):
 
-If no relay.yaml exists, write a minimal config recording the peer relationship:
+If no relay.yaml exists, write a minimal config that records the peer relationship. Note: `relay.repo` and `relay.local` are left empty because the user's own relay doesn't exist yet. This config tracks the peer connection only -- automatic pull requires `/alive:relay setup` to populate the full config:
 
 ```bash
-python3 - "$WORLD_ROOT/.alive/relay.yaml" "$GITHUB_USERNAME" "<relay.sender>" << 'PYEOF'
-import sys, datetime
+python3 - "$WORLD_ROOT/.alive/relay.yaml" "$GITHUB_USERNAME" "<relay.sender>" "<relay.repo>" << 'PYEOF'
+import sys, datetime, re
 
 config_path = sys.argv[1]
 username = sys.argv[2]
 peer_owner = sys.argv[3]
+peer_relay = sys.argv[4]
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 today = datetime.date.today().isoformat()
+
+# Sanitize peer values (already validated, but defense in depth)
+safe_owner = re.sub(r'[^a-zA-Z0-9-]', '', peer_owner)[:39]
+safe_relay = re.sub(r'[^a-zA-Z0-9./_-]', '', peer_relay)[:100]
 
 yaml_content = f"""relay:
   repo: ""
@@ -386,9 +470,9 @@ yaml_content = f"""relay:
   last_sync: "{now}"
   last_commit: ""
 peers:
-  - github: "{peer_owner}"
-    name: "{peer_owner}"
-    relay: "{peer_owner}/walnut-relay"
+  - github: "{safe_owner}"
+    name: "{safe_owner}"
+    relay: "{safe_relay}"
     person_walnut: ""
     added: "{today}"
     status: "accepted"
@@ -410,22 +494,22 @@ If relay.yaml already exists but the sender isn't a peer, append them to the pee
 ```
 ╭─ 🐿️ relay setup
 │
-│  You've joined <relay.sender>'s relay.
-│  They can push packages to you automatically.
+│  You've accepted <relay.sender>'s relay invite and saved their key.
+│  They can push encrypted packages to you once you have your own relay.
 │
-│  To send packages back via relay, you need your own.
+│  To receive packages automatically (and send back), create your relay:
 │
 │  ▸ Create your relay now?
 │  1. Yes -- run /alive:relay setup
-│  2. Later -- I'll set it up when I need to send
+│  2. Later -- I'll set it up when I need to
 ╰─
 ```
 
-If yes, run the full `/alive:relay setup` flow. After setup completes, push own public key to the sender's relay:
+If yes, run the full `/alive:relay setup` flow. Setup will populate the empty `relay.repo`, `relay.local`, `private_key`, and `public_key` fields in relay.yaml while preserving the existing peer list. After setup completes, push own public key to the sender's relay:
 
 ```bash
 PUBLIC_KEY_B64=$(base64 < "$WORLD_ROOT/.alive/relay-keys/public.pem" | tr -d '\n')
-gh api "repos/<relay.sender>/walnut-relay/contents/keys/$GITHUB_USERNAME.pem" \
+gh api "repos/<relay.repo>/contents/keys/$GITHUB_USERNAME.pem" \
   -X PUT \
   -f message="Add public key for $GITHUB_USERNAME" \
   -f content="$PUBLIC_KEY_B64" 2>&1
@@ -433,11 +517,25 @@ gh api "repos/<relay.sender>/walnut-relay/contents/keys/$GITHUB_USERNAME.pem" \
 
 7. **Confirm and continue with import:**
 
+If own relay was created (full setup completed):
+
 ```
 ╭─ 🐿️ relay connected
 │
 │  Connected to <relay.sender>'s relay.
-│  Future packages will arrive automatically.
+│  Bidirectional relay active -- packages will be encrypted automatically.
+│
+│  Continuing with package import...
+╰─
+```
+
+If "Later" was chosen (peer tracked, but no own relay yet):
+
+```
+╭─ 🐿️ peer saved
+│
+│  Saved <relay.sender> as a relay peer.
+│  Run /alive:relay setup when you're ready for automatic delivery.
 │
 │  Continuing with package import...
 ╰─
