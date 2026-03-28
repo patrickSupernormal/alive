@@ -1,61 +1,55 @@
 # Changelog
 
-All notable changes to the Walnut plugin are documented here.
+All notable changes to the ALIVE Context System plugin are documented here.
 
-## [1.0.0] - 2026-03-25
+## [2.0.0] - 2026-03-29
 
-### The Walnut Rebrand
+### The ALIVE Context System
 
-First release as **Walnut**. Everything that was "alive" is now "walnut."
+Complete architecture overhaul. Product name: ALIVE Context System. Plugin: `alive`. Install: `claude plugin install alive@walnut`.
+
+### Architecture
+- **Kernel replaces core:** `_core/` -> `_kernel/`. Three source files: key.md, log.md, insights.md
+- **Bundles replace capsules:** `_capsules/` -> `bundles/` (promoted to walnut top level). Two species: outcome and evergreen.
+- **Generated projections:** now.md deleted, replaced by generated `now.json`. Tasks distributed to bundles.
+- **Context manifest:** `companion.md` -> `context.manifest.yaml` -- integration manifest + marketplace listing
+- **Projection tiers:** world-index.json -> now.json -> manifests -> raw. Generated on save.
+- **People/ elevated** outside ALIVE framework to top-level domain
+- **Subagent brief pack:** `.alive/_generated/subagent-brief.md` injected into all spawned agents
+
+### Added
+- **`alive:bundle` skill** -- create, share, graduate bundles (replaces capsule-manager)
+- **`alive:system-upgrade` skill** -- upgrade from any previous version with visual plan
+- **Named squirrels** -- users name their context companion (persona layer)
+- **Action logging** -- proof of work in squirrel YAML
+- **Plugin compatibility watch** -- detect conflicts with other plugins, suggest ALIVE-compatible patterns
+- **Cross-platform support** -- python3 primary, node fallback, Unicode platform-guarded
 
 ### Changed
-- **Brand:** alive → Walnut. Plugin name: `walnut`. Namespace: `walnut:*`
-- **GitHub:** org `alivecomputer` → `stackwalnuts`. Repo `alive-claude` → `claude-code`
-- **System folder:** `.alive/` → `.walnut/`
-- **All 15 hook scripts:** `alive-*` → `walnut-*`
-- **Marketplace:** name `alivecomputer` → `stackwalnuts`
-- **Install:** `claude plugin install walnut@walnut`
+- **Namespace:** `walnut:*` -> `alive:*` (15 skills)
+- **System folder:** `.walnut/` -> `.alive/`
+- **6 rules rewritten** for v2 architecture (bundles.md replaces capsules.md)
+- **14 hooks updated** for v2 paths and cross-platform safety
+- **README rewritten** -- ALIVE story, two units, projections, install guide
+
+### Walnut v1 (sunset)
+- `plugins/walnut/` preserved as frozen v1. Install: `claude plugin install walnut@walnut`
+- No further updates. Use `alive:system-upgrade` to migrate.
+
+## [1.0.1-beta] -- 2026-03-12
 
 ### Added
-- **Auto-migration:** session-new hook detects `.alive/` and renames to `.walnut/` automatically
-- **`migrate-alive-to-v1` skill** (non-user-invocable) — handles edge cases when both `.alive/` and `.walnut/` exist
-- **Backward compat in all hooks** — `find_world` checks both `.walnut/` and `.alive/` config paths
+- Capsule architecture -- self-contained units of work
+- 3 new skills: mine-for-context, build-extensions, my-context-graph
+- Inbox scan mode, context graph, world index generator
 
-## [1.0.1-beta] — 2026-03-12
-
-### Added
-- **Capsule architecture** — self-contained units of work replace `_working/` and `_references/`. Capsules have companions, versioned drafts, and raw source material. Full lifecycle: `draft → prototype → published → done`. Graduation to walnut root on v1 ship.
-- **3 new skills:** `walnut:mine-for-context` (deep context extraction), `walnut:build-extensions` (create custom skills/rules/hooks), `walnut:my-context-graph` (interactive world graph)
-- **Inbox scan mode** — `walnut:capture-context` with no content falls back to scanning `03_Inputs/` for unrouted files
-- **Context graph** — D3.js force-directed visualization of your entire world
-- **World index generator** — `_index.yaml` built from all walnut and capsule frontmatter
-- **Capsule routing heuristic** — automatic routing of content to capsules by goal alignment
-- **Multi-agent capsule collaboration** — active session claims, capsule-scoped tasks, append-only work logs
-- **Cross-capsule shared references** — raw files live where first captured, other capsules link via `sources:` path
-
-### Changed
-- **Walnut anatomy** — system files live in `_core/`. `_capsules/` and `_squirrels/` are the only system folders. Everything else is live context.
-- **Skill renames:** `housekeeping` → `tidy`, `config` → `tune`, `recall` → `history`
-- **Rules restructured** — 6 rule files: capsules, human, squirrels, standards, voice, world
-- **Templates updated** for capsule structure
-- **All hooks** updated with backward compatibility for flat walnut structures
-
-### Removed
-- `_working/` and `_references/` folders (migrated to capsules, legacy still supported)
-
-## [1.0.0-beta] — 2026-03-10
+## [1.0.0-beta] -- 2026-03-10
 
 ### Added
-- **12 skills:** world, load, save, capture, find, create, tidy, tune, history, mine, extend, map
-- **6 foundational rules:** capsules, human, squirrels, standards, voice, world
-- **12 hooks:** session lifecycle, log guardian, rules guardian, archive enforcer, external guard, root guardian, context watch, inbox check, pre-compact, post-write
-- **Squirrel caretaker runtime** — stash mechanic, session signing, zero-context handoff
-- **Walnut framework** — 5-domain folder structure (Archive, Life, Inputs, Ventures, Experiments)
-- **Walnut system** — 5 core files (key.md, now.md, log.md, insights.md, tasks.md)
-- **Onboarding** — first-run world builder experience
-- **Statusline** — terminal status bar with session info, context warnings, and stash count
-- **Templates** for all system file types
+- 12 skills, 6 rules, 12 hooks
+- Squirrel caretaker runtime, stash mechanic, ALIVE framework
+- Onboarding, statusline, templates
 
-## [0.1.0-beta] — 2026-02-23
+## [0.1.0-beta] -- 2026-02-23
 
-Initial release. 9 skills, flat walnut structure, basic session management.
+Initial release.

@@ -123,10 +123,12 @@ fi
 
 # ── HEALTHY STATE ──
 
-# Count walnuts available
+# Count walnuts available (check both v2 _kernel/ and v1 _core/ for backward compat)
 WALNUT_COUNT=""
 if [ -n "$WORLD_ROOT" ]; then
-  WALNUT_COUNT=$(find "$WORLD_ROOT" -path "*/_kernel/key.md" -not -path "*/01_Archive/*" 2>/dev/null | wc -l | tr -d ' ')
+  V2_COUNT=$(find "$WORLD_ROOT" -path "*/_kernel/key.md" -not -path "*/01_Archive/*" 2>/dev/null | wc -l | tr -d ' ')
+  V1_COUNT=$(find "$WORLD_ROOT" -path "*/_core/key.md" -not -path "*/01_Archive/*" 2>/dev/null | wc -l | tr -d ' ')
+  WALNUT_COUNT=$(( V2_COUNT + V1_COUNT ))
 fi
 
 # Boot vs working: if cost is $0.00, session hasn't had a response yet

@@ -1,6 +1,6 @@
-# Contributing to Walnut
+# Contributing to the ALIVE Context System
 
-Thanks for your interest in contributing. Walnut is open source and we welcome contributions — whether it's a bug fix, new skill, or documentation improvement.
+Thanks for your interest in contributing. The ALIVE Context System is open source and we welcome contributions -- bug fixes, new skills, documentation, and ideas.
 
 ## Getting Started
 
@@ -14,11 +14,11 @@ Thanks for your interest in contributing. Walnut is open source and we welcome c
 ## Project Structure
 
 ```
-plugins/walnut/
-  skills/         12 skill folders, each with a SKILL.md
+plugins/alive/
+  skills/         15 skill folders, each with a SKILL.md
   rules/          6 rule files defining caretaker behavior
   hooks/          hooks.json + scripts/ for session lifecycle
-  templates/      file templates for walnuts, capsules, companions
+  templates/      file templates for walnuts, bundles, manifests
   onboarding/     first-run experience
   statusline/     terminal status bar integration
   scripts/        utility scripts (world index, context graph)
@@ -28,16 +28,16 @@ plugins/walnut/
 ## Making Changes
 
 ### Skills
-Each skill lives in `plugins/walnut/skills/{name}/SKILL.md`. Skills define what the squirrel can do — they're invoked by the user via `/walnut:{name}`.
+Each skill lives in `plugins/alive/skills/{name}/SKILL.md`. Skills define what the squirrel can do -- invoked via `/alive:{name}`.
 
 ### Rules
-Rules live in `plugins/walnut/rules/`. They define how the squirrel behaves — these are always loaded and always followed.
+Rules live in `plugins/alive/rules/`. They define how the squirrel behaves -- always loaded, always followed.
 
 ### Hooks
-Hook scripts live in `plugins/walnut/hooks/scripts/`. They fire on session lifecycle events (start, resume, compact) and tool use events (pre/post). The hook registry is `plugins/walnut/hooks/hooks.json`.
+Hook scripts live in `plugins/alive/hooks/scripts/`. They fire on session lifecycle events and tool use events. Registry: `plugins/alive/hooks/hooks.json`.
 
 ### Templates
-Templates in `plugins/walnut/templates/` define the schema for system files. The squirrel reads these before writing any system file.
+Templates in `plugins/alive/templates/` define the schema for system files. The squirrel reads these before writing any system file.
 
 ## Guidelines
 
@@ -46,7 +46,7 @@ Templates in `plugins/walnut/templates/` define the schema for system files. The
 - **Don't break backward compatibility.** Existing walnuts must keep working.
 - **Test with a real world.** Create a test walnut and exercise your changes.
 - **Keep skills focused.** One skill, one purpose.
-- **Respect the stash.** Mid-session writes are limited to capture and capsule work only.
+- **Cross-platform.** Hooks must work on Mac, Linux, and Windows (Git Bash). No hardcoded Unicode in hook script strings. Use platform detection from `alive-common.sh`.
 
 ## Pull Requests
 
@@ -56,7 +56,7 @@ Templates in `plugins/walnut/templates/` define the schema for system files. The
 
 ## Reporting Issues
 
-Use [GitHub Issues](https://github.com/stackwalnuts/walnut/issues) for bugs and feature requests. Use the provided templates.
+Use [GitHub Issues](https://github.com/stackwalnuts/walnut/issues) for bugs and feature requests.
 
 ## License
 
