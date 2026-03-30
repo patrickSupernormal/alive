@@ -494,7 +494,7 @@ If `NO_RELAY`, skip the entire step. The local `.walnut` file stands alone.
 
 #### 9b. Parse peers and check relay reachability
 
-Read the peer list, filter to `status: "accepted"`, then probe each peer's relay repo. The output is a structured, indexed table that Step 9c uses directly.
+Read the peer list, filter to `status: "accepted"`, then probe each peer's relay repo. The output is a JSON object that Step 9c parses to build the menu and extract peer identity variables.
 
 **Reachability check:** For each accepted peer, verify their relay repo is accessible via the GitHub API. Use explicit timeout wrapping (same pattern as `alive-relay-check.sh`):
 
@@ -535,8 +535,8 @@ total_start = time.time()
 for p in peers:
     remaining = TOTAL_BUDGET - (time.time() - total_start)
     if remaining <= 0:
-        # Budget exhausted -- distinct from per-peer network timeout
-        p["status"] = "BUDGET_EXCEEDED"
+        # Budget exhausted -- classified as TIMEOUT (couldn't verify)
+        p["status"] = "TIMEOUT"
         continue
     peer_timeout = min(PER_PEER_MAX, remaining)
     try:
@@ -590,11 +590,8 @@ Example output:
 |--------|---------|-------------|
 | `OK` | Relay exists and accessible | Yes |
 | `NOT_FOUND_OR_NO_ACCESS` | 403/404 -- repo missing or private without access | No |
-| `TIMEOUT` | Per-peer network timeout (5s) | Yes (with note) |
-| `BUDGET_EXCEEDED` | Total 10s check budget ran out before this peer was probed | Yes (with note) |
+| `TIMEOUT` | Per-peer network timeout or total 10s budget exceeded | Yes (with note) |
 | `OTHER_ERROR` | Unexpected API error | Yes (with note) |
-
-`TIMEOUT` and `BUDGET_EXCEEDED` both display as "(couldn't verify)" in the menu but are distinct in the data for debugging.
 
 #### 9c. Present relay push option from JSON peer list
 
@@ -662,7 +659,7 @@ PEER_PUBKEY="$WORLD_ROOT/.alive/relay-keys/peers/$PEER_USERNAME.pem"
 if [ ! -f "$PEER_PUBKEY" ] || [ ! -s "$PEER_PUBKEY" ]; then
   mkdir -p "$WORLD_ROOT/.alive/relay-keys/peers"
   if ! gh api "repos/$PEER_RELAY/contents/keys/$PEER_USERNAME.pem" \
-       --jq '.content' 2>/dev/null | base64 -d > "$PEER_PUBKEY"; then
+       --jq '.content' 2>/dev/null | (base64 -d 2>/dev/null || base64 -D) > "$PEER_PUBKEY"; then
     echo "KEY_FAILED"
     rm -f "$PEER_PUBKEY"
     # Exit -- trap cleans up temp files
