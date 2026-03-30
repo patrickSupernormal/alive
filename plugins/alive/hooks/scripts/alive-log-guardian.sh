@@ -1,6 +1,6 @@
 #!/bin/bash
 # Hook: Log Guardian — PreToolUse (Edit|Write)
-# Blocks edits to signed log entries. Blocks all Write to log.md.
+# Blocks edits to signed log entries. Blocks Write to existing log.md (allows creation).
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 source "$SCRIPT_DIR/alive-common.sh"
@@ -22,8 +22,9 @@ if [ -n "${WORLD_ROOT:-}" ] && ! echo "$FILE_PATH" | grep -q "^$WORLD_ROOT"; the
   exit 0
 fi
 
-# Block ALL Write operations to log.md (must use Edit to prepend)
-if [ "$TOOL_NAME" = "Write" ]; then
+# Block Write operations to existing log.md (must use Edit to prepend).
+# Allow Write when file doesn't exist yet — initial creation for new walnuts.
+if [ "$TOOL_NAME" = "Write" ] && [ -f "$FILE_PATH" ]; then
   echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"log.md cannot be overwritten. Use Edit to prepend new entries after the YAML frontmatter."}}'
   exit 0
 fi
