@@ -443,7 +443,7 @@ with open(config_path) as f:
 # Check for the peer in the YAML (simple text scan)
 # Look for github: followed by the username on the same line
 import re
-pattern = re.compile(r'^\s+github:\s*["\']?' + re.escape(peer_username) + r'["\']?\s*$', re.MULTILINE)
+pattern = re.compile(r'^\s*-?\s*github:\s*["\']?' + re.escape(peer_username) + r'["\']?\s*$', re.MULTILINE | re.IGNORECASE)
 if pattern.search(text):
     print("DUPLICATE")
 else:
@@ -733,6 +733,12 @@ If the key file doesn't exist yet (peer hasn't finished setup), warn but continu
 
 ### Step 4 -- Check if own relay exists
 
+**Persist PEER_OWNER before the setup detour** -- the full `/alive:relay setup` flow may change context, so write `PEER_OWNER` to a temp file first:
+
+```bash
+echo "$PEER_OWNER" > "$WORLD_ROOT/.alive/.peer_accept_pending"
+```
+
 ```bash
 test -f "$WORLD_ROOT/.alive/relay.yaml" && echo "HAS_RELAY" || echo "NO_RELAY"
 ```
@@ -753,7 +759,13 @@ If the human doesn't have their own relay yet, offer to set one up:
 ╰─
 ```
 
-If yes, run the full `/alive:relay setup` flow (Steps 2 through 7). After setup completes, continue to Step 5.
+If yes, run the full `/alive:relay setup` flow (Steps 2 through 7). After setup completes, read back `PEER_OWNER`:
+
+```bash
+PEER_OWNER=$(cat "$WORLD_ROOT/.alive/.peer_accept_pending" 2>/dev/null)
+```
+
+Continue to Step 5.
 
 ### Step 5 -- Push own public key to peer's relay
 
@@ -770,23 +782,128 @@ gh api "repos/$PEER_OWNER/walnut-relay/contents/keys/$GITHUB_USERNAME.pem" \
 
 If the key already exists (API returns 422), the peer already has your key. Skip silently.
 
-### Step 6 -- Write or update .alive/relay.yaml
+### Step 6 -- Auto-invite peer back
 
-**If the human just ran setup (Step 4 → yes):** relay.yaml already exists. Add the peer to the peer list using the same Python append logic as peer add Step 7, with status `"accepted"`.
+If the receiver has a relay repo (pre-existing or just created in Step 4) and `PEER_OWNER` is available, offer to invite the sender as a collaborator on the receiver's relay. This completes the bidirectional link in one flow.
+
+**Check collaborator state first:**
+
+```bash
+HTTP_STATUS=$(gh api "repos/$GITHUB_USERNAME/walnut-relay/collaborators/$PEER_OWNER" -i --silent 2>&1 | head -1 | grep -oE '[0-9]{3}')
+```
+
+- **204:** Already a collaborator -- skip silently, log "already connected"
+- **404:** Not a collaborator -- proceed to confirmation prompt
+- **Other:** Skip with note ("couldn't check collaborator state")
+
+**Confirmation (external action -- MUST confirm before executing):**
+
+```
+╭─ 🐿️ invite back
+│
+│  To receive packages from <peer-owner>, they need
+│  push access to your relay.
+│
+│  ▸ Invite <peer-owner> as collaborator?
+│  1. Yes -- send the invite
+│  2. Later -- run /alive:relay peer add <peer-owner> when ready
+╰─
+```
+
+**After confirmation:**
+
+```bash
+gh api "repos/$GITHUB_USERNAME/walnut-relay/collaborators/$PEER_OWNER" \
+  -X PUT -f permission=push 2>&1
+```
+
+Handle response codes:
+- **201:** Invitation sent successfully
+- **422:** Already invited -- skip silently
+- **429 / rate limit:** Show guidance, don't block the flow
+
+Then create an inbox directory for the peer on the receiver's relay:
+
+```bash
+GITKEEP_CONTENT=$(printf 'Inbox for %s\n' "$PEER_OWNER" | base64 | tr -d '\n')
+gh api "repos/$GITHUB_USERNAME/walnut-relay/contents/inbox/$PEER_OWNER/.gitkeep" \
+  -X PUT \
+  -f message="Add inbox for $PEER_OWNER" \
+  -f content="$GITKEEP_CONTENT" 2>&1
+```
+
+If the `.gitkeep` already exists (422), skip silently.
+
+**If the receiver has no relay (chose "Later" in Step 4):** Don't offer the invite-back prompt. Instead, show guidance:
+
+```
+╭─ 🐿️ heads up
+│
+│  To send packages back to <peer-owner>, set up your relay:
+│  /alive:relay setup
+│  Then invite them: /alive:relay peer add <peer-owner>
+╰─
+```
+
+**Clean up the persistence file** at the end of this step (regardless of path taken):
+
+```bash
+rm -f "$WORLD_ROOT/.alive/.peer_accept_pending"
+```
+
+### Step 7 -- Display name prompt
+
+**Only prompt when creating a new person walnut.** First, search for an existing person walnut by BOTH path AND `github:` field in key.md frontmatter:
+
+```bash
+# Search by github field across all person walnuts
+EXISTING_BY_GITHUB=$(grep -rl "github:.*$PEER_OWNER" "$WORLD_ROOT/02_Life/people/"*"/_core/key.md" 2>/dev/null | head -1)
+
+# Search by slug match (GitHub username as slug)
+PEER_SLUG_DEFAULT=$(echo "$PEER_OWNER" | tr '[:upper:]' '[:lower:]')
+if [ -d "$WORLD_ROOT/02_Life/people/$PEER_SLUG_DEFAULT" ]; then
+  EXISTING_BY_PATH="$WORLD_ROOT/02_Life/people/$PEER_SLUG_DEFAULT"
+fi
+```
+
+If either search finds an existing walnut, skip the prompt -- use the existing walnut's name and slug. Set `PEER_NAME` and `PEER_SLUG` from the existing walnut.
+
+If no existing walnut found, prompt for a display name:
+
+```
+╭─ 🐿️ peer info
+│
+│  ▸ What's their name? (default: <peer-owner>)
+╰─
+```
+
+- **Enter / empty:** Use the GitHub username as both display name and slug
+- **Name provided:** Use as display name; derive slug via the same logic as peer add Step 6
+
+### Step 8 -- Write or update .alive/relay.yaml
+
+**If the human just ran setup (Step 4 → yes):** relay.yaml already exists. Add the peer to the peer list using the same Python append logic as peer add Step 8, with status `"accepted"`. Use `PEER_NAME` from Step 7 for the `name:` field and `PEER_SLUG` for the `person_walnut:` path.
 
 **If relay.yaml already existed before this flow:** Add the peer to the existing peer list with status `"accepted"`.
 
 **If the human chose "Later" in Step 4 and no relay.yaml exists:** Write a minimal relay.yaml that records the peer relationship even without a full relay setup. This ensures the peer is tracked:
 
 ```bash
-python3 - "$WORLD_ROOT/.alive/relay.yaml" "$GITHUB_USERNAME" "$PEER_OWNER" << 'PYEOF'
-import sys, datetime
+python3 - "$WORLD_ROOT/.alive/relay.yaml" "$GITHUB_USERNAME" "$PEER_OWNER" "$PEER_NAME" "$PEER_SLUG" << 'PYEOF'
+import sys, datetime, re
 
 config_path = sys.argv[1]
 username = sys.argv[2]
 peer_owner = sys.argv[3]
+peer_name = sys.argv[4]
+peer_slug = sys.argv[5]
 now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 today = datetime.date.today().isoformat()
+
+# Sanitize name: single line, escape quotes, strip control chars
+safe_name = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', peer_name)
+safe_name = safe_name.replace('\\', '\\\\').replace('"', '\\"')
+safe_name = safe_name.strip()[:100]
 
 yaml_content = f"""relay:
   repo: ""
@@ -798,9 +915,9 @@ yaml_content = f"""relay:
   last_commit: ""
 peers:
   - github: "{peer_owner}"
-    name: "{peer_owner}"
+    name: "{safe_name}"
     relay: "{peer_owner}/walnut-relay"
-    person_walnut: ""
+    person_walnut: "02_Life/people/{peer_slug}"
     added: "{today}"
     status: "accepted"
 """
@@ -814,11 +931,11 @@ PYEOF
 
 This partial config allows `/alive:relay setup` to detect it later and fill in the missing fields while preserving the peer list.
 
-### Step 7 -- Create or update person walnut
+### Step 9 -- Create or update person walnut
 
-Same as peer add Step 8 -- check if a person walnut exists for the inviter, create or update it with `github:` and `relay:` fields.
+Same as peer add Step 9 -- check if a person walnut exists for the inviter (using the search from Step 7), create or update it with `github:` and `relay:` fields. Use the display name from Step 7 for the walnut goal and relay.yaml `name:` field.
 
-### Step 8 -- Confirm
+### Step 10 -- Confirm
 
 ```
 ╭─ 🐿️ relay connected
