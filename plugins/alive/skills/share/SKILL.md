@@ -523,7 +523,8 @@ for block in blocks:
             })
 
 if not peers:
-    print("NO_PEERS")
+    # Always emit valid JSON, even when no peers
+    print(json.dumps({"peers": []}))
     sys.exit(0)
 
 # Probe each peer's relay with 5s per-peer timeout, 10s hard total cap.
@@ -534,7 +535,8 @@ total_start = time.time()
 for p in peers:
     remaining = TOTAL_BUDGET - (time.time() - total_start)
     if remaining <= 0:
-        p["status"] = "TIMEOUT"
+        # Budget exhausted -- distinct from per-peer network timeout
+        p["status"] = "BUDGET_EXCEEDED"
         continue
     peer_timeout = min(PER_PEER_MAX, remaining)
     try:
@@ -563,7 +565,7 @@ for p in peers:
     except Exception:
         p["status"] = "OTHER_ERROR"
 
-# Emit as JSON -- safe for names with spaces, special chars
+# Always emit valid JSON -- safe for names with spaces, special chars
 print(json.dumps({"peers": [
     {"index": i+1, "github": p["github"], "relay": p["relay"],
      "name": p["name"], "status": p["status"]}
@@ -572,7 +574,11 @@ print(json.dumps({"peers": [
 PYEOF
 ```
 
-The output is a single JSON line. The squirrel parses it to build the menu and extract peer fields by index. Example:
+The output is always a single JSON line with a `peers` array (empty if no accepted peers). The squirrel parses it to build the menu and extract peer fields by index.
+
+If `peers` is empty, skip relay push. Surface a brief note only if the human explicitly mentioned relay during the session, otherwise skip silently.
+
+Example output:
 
 ```json
 {"peers":[{"index":1,"github":"benflint","relay":"benflint/walnut-relay","name":"Ben Flint","status":"OK"},{"index":2,"github":"carolsmith","relay":"carolsmith/walnut-relay","name":"Carol Smith","status":"NOT_FOUND_OR_NO_ACCESS"}]}
@@ -583,11 +589,12 @@ The output is a single JSON line. The squirrel parses it to build the menu and e
 | Status | Meaning | Selectable? |
 |--------|---------|-------------|
 | `OK` | Relay exists and accessible | Yes |
-| `NOT_FOUND_OR_NO_ACCESS` | 404 -- repo missing or private without access | No |
-| `TIMEOUT` | Couldn't verify within timeout (or total 10s cap exceeded) | Yes (with note) |
+| `NOT_FOUND_OR_NO_ACCESS` | 403/404 -- repo missing or private without access | No |
+| `TIMEOUT` | Per-peer network timeout (5s) | Yes (with note) |
+| `BUDGET_EXCEEDED` | Total 10s check budget ran out before this peer was probed | Yes (with note) |
 | `OTHER_ERROR` | Unexpected API error | Yes (with note) |
 
-If all peers are `NOT_FOUND_OR_NO_ACCESS`, skip relay push. Surface a brief note only if the human explicitly mentioned relay during the session, otherwise skip silently.
+`TIMEOUT` and `BUDGET_EXCEEDED` both display as "(couldn't verify)" in the menu but are distinct in the data for debugging.
 
 #### 9c. Present relay push option from JSON peer list
 
