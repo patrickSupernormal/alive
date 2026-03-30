@@ -563,10 +563,10 @@ for p in peers:
     except Exception:
         p["status"] = "OTHER_ERROR"
 
-# Emit one line per peer: index|github|relay|name|status
-# Pipe-delimited to safely handle spaces in names
+# Emit one line per peer: index\tgithub\trelay\tname\tstatus
+# Tab-delimited -- tabs cannot appear in GitHub usernames, repo names, or display names
 for i, p in enumerate(peers):
-    print(f"{i+1}|{p['github']}|{p['relay']}|{p['name']}|{p['status']}")
+    print(f"{i+1}\t{p['github']}\t{p['relay']}\t{p['name']}\t{p['status']}")
 print(f"PEER_COUNT={len(peers)}")
 PYEOF
 )
@@ -574,13 +574,15 @@ PYEOF
 echo "$PEERS_DATA"
 ```
 
-The output uses pipe-delimited lines (one per peer) to safely handle names with spaces. The last line is `PEER_COUNT=N`. Example:
+The output uses tab-delimited lines (one per peer). Tabs cannot appear in GitHub usernames, repository names, or display names, making this encoding safe without escaping. The last line is `PEER_COUNT=N`. Example:
 
 ```
-1|benflint|benflint/walnut-relay|Ben Flint|OK
-2|carolsmith|carolsmith/walnut-relay|Carol Smith|NOT_FOUND_OR_NO_ACCESS
+1	benflint	benflint/walnut-relay	Ben Flint	OK
+2	carolsmith	carolsmith/walnut-relay	Carol Smith	NOT_FOUND_OR_NO_ACCESS
 PEER_COUNT=2
 ```
+
+**Note on variable persistence:** Steps 9b and 9c are AI-mediated. The squirrel reads the printed output from Step 9b, presents the menu to the human in Step 9c, then writes the selected peer's `PEER_USERNAME`, `PEER_RELAY`, and `PEER_NAME` as literal string values into the Step 9d-9g consolidated script. The `PEERS_DATA` variable does not need to persist across Bash invocations -- the AI reads the output and hardcodes the selected values.
 
 If `PEER_COUNT=0`, skip relay push. Surface a brief note only if the human explicitly mentioned relay during the session, otherwise skip silently.
 
@@ -593,7 +595,7 @@ If `PEER_COUNT=0`, skip relay push. Surface a brief note only if the human expli
 | `TIMEOUT` | Per-peer network timeout or total 10s budget exceeded | Yes (with note) |
 | `OTHER_ERROR` | Unexpected API error | Yes (with note) |
 
-#### 9c. Present relay push option from Step 9b output
+#### 9c. Present relay push option
 
 Build the menu from the pipe-delimited peer lines emitted by Step 9b:
 
@@ -614,18 +616,18 @@ Peers with `NOT_FOUND_OR_NO_ACCESS` status are shown with "(not found or no acce
 
 The last option is always "Skip". If only one peer exists, still show the menu.
 
-**When the human selects a peer (e.g., "1"), extract the three identity variables by parsing the matching pipe-delimited line:**
+**When the human selects a peer (e.g., "1"), read the corresponding line from Step 9b output and extract the three identity variables:**
 
 ```bash
-# Find the line starting with the selected index from PEERS_DATA
-SELECTED_LINE=$(echo "$PEERS_DATA" | grep "^${selection}|")
-# Parse pipe-delimited fields: index|github|relay|name|status
-PEER_USERNAME=$(echo "$SELECTED_LINE" | cut -d'|' -f2)
-PEER_RELAY=$(echo "$SELECTED_LINE" | cut -d'|' -f3)
-PEER_NAME=$(echo "$SELECTED_LINE" | cut -d'|' -f4)
+# The squirrel reads the tab-delimited output from Step 9b and extracts fields
+# for the selected peer. These values are then hardcoded into the Step 9d-9g script.
+# Example for selection "1" from the output "1\tbenflint\tbenflint/walnut-relay\tBen Flint\tOK":
+PEER_USERNAME="benflint"             # field 2 (github)
+PEER_RELAY="benflint/walnut-relay"   # field 3 (relay)
+PEER_NAME="Ben Flint"               # field 4 (name)
 ```
 
-Uses `cut -d'|'` which is portable across macOS and Linux (no PCRE/`grep -P` needed).
+The squirrel reads the Step 9b output, identifies the line matching the selection, and writes these three values as literal strings into the Step 9d-9g consolidated script.
 
 These three variables are the **single source of truth** for Steps 9d-9g. They must be declared at the top of the consolidated script block and never re-derived.
 
