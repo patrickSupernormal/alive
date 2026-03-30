@@ -500,7 +500,7 @@ Read the peer list, filter to `status: "accepted"`, then probe each peer's relay
 
 ```bash
 python3 - "$WORLD_ROOT/.alive/relay.yaml" << 'PYEOF'
-import sys, re, subprocess, time
+import sys, re, subprocess, time, json
 
 config_path = sys.argv[1]
 with open(config_path) as f:
@@ -526,42 +526,56 @@ if not peers:
     print("NO_PEERS")
     sys.exit(0)
 
-# Probe each peer's relay with a 5s per-peer timeout, 10s total cap
+# Probe each peer's relay with 5s per-peer timeout, 10s hard total cap.
+# Per-peer timeout is min(5, remaining_budget) so we never exceed 10s.
+TOTAL_BUDGET = 10
+PER_PEER_MAX = 5
 total_start = time.time()
-for i, p in enumerate(peers):
-    elapsed = time.time() - total_start
-    if elapsed > 10:
+for p in peers:
+    remaining = TOTAL_BUDGET - (time.time() - total_start)
+    if remaining <= 0:
         p["status"] = "TIMEOUT"
         continue
+    peer_timeout = min(PER_PEER_MAX, remaining)
     try:
+        # Use -i to get HTTP headers; parse status code from first line
         r = subprocess.run(
-            ["gh", "api", f"repos/{p['relay']}", "--silent"],
-            capture_output=True, timeout=5
+            ["gh", "api", f"repos/{p['relay']}", "-i", "--silent"],
+            capture_output=True, timeout=peer_timeout
         )
-        if r.returncode == 0:
-            p["status"] = "OK"
-        else:
-            stderr = r.stderr.decode()
-            if "404" in stderr or "Not Found" in stderr:
-                p["status"] = "NOT_FOUND_OR_NO_ACCESS"
-            elif "403" in stderr or "Forbidden" in stderr:
+        stdout = r.stdout.decode()
+        # First line of -i output is "HTTP/2.0 200 OK" or similar
+        status_match = re.search(r'HTTP/[\d.]+ (\d{3})', stdout)
+        if status_match:
+            code = int(status_match.group(1))
+            if 200 <= code < 300:
+                p["status"] = "OK"
+            elif code in (403, 404):
                 p["status"] = "NOT_FOUND_OR_NO_ACCESS"
             else:
                 p["status"] = "OTHER_ERROR"
+        elif r.returncode == 0:
+            p["status"] = "OK"
+        else:
+            p["status"] = "OTHER_ERROR"
     except subprocess.TimeoutExpired:
         p["status"] = "TIMEOUT"
     except Exception:
         p["status"] = "OTHER_ERROR"
 
-# Emit indexed peer table (machine-parseable)
-for i, p in enumerate(peers):
-    print(f'PEER[{i+1}]='
-          f'github={p["github"]} '
-          f'relay={p["relay"]} '
-          f'name={p["name"]} '
-          f'status={p["status"]}')
-print(f"PEER_COUNT={len(peers)}")
+# Emit as JSON -- safe for names with spaces, special chars
+print(json.dumps({"peers": [
+    {"index": i+1, "github": p["github"], "relay": p["relay"],
+     "name": p["name"], "status": p["status"]}
+    for i, p in enumerate(peers)
+]}))
 PYEOF
+```
+
+The output is a single JSON line. The squirrel parses it to build the menu and extract peer fields by index. Example:
+
+```json
+{"peers":[{"index":1,"github":"benflint","relay":"benflint/walnut-relay","name":"Ben Flint","status":"OK"},{"index":2,"github":"carolsmith","relay":"carolsmith/walnut-relay","name":"Carol Smith","status":"NOT_FOUND_OR_NO_ACCESS"}]}
 ```
 
 **Status buckets:**
@@ -575,9 +589,9 @@ PYEOF
 
 If all peers are `NOT_FOUND_OR_NO_ACCESS`, skip relay push. Surface a brief note only if the human explicitly mentioned relay during the session, otherwise skip silently.
 
-#### 9c. Present relay push option from indexed table
+#### 9c. Present relay push option from JSON peer list
 
-Use the `PEER[n]` table from Step 9b to build the menu. Parse fields from each indexed entry:
+Parse the JSON output from Step 9b. Build the menu from the `peers` array:
 
 ```
 ╭─ 🐿️ relay
@@ -596,13 +610,13 @@ Peers with `NOT_FOUND_OR_NO_ACCESS` status are shown with "(not found or no acce
 
 The last option is always "Skip". If only one peer exists, still show the menu.
 
-**When the human selects a peer (e.g., "1"), extract the three identity variables from the indexed table:**
+**When the human selects a peer (e.g., "1"), extract the three identity variables from the JSON by matching `index`:**
 
 ```bash
-# From PEER[$selection]:
-PEER_USERNAME="benflint"             # github field
-PEER_RELAY="benflint/walnut-relay"   # relay field
-PEER_NAME="Ben Flint"               # name field
+# From the JSON peers array, entry with index matching selection:
+PEER_USERNAME="benflint"             # .github field
+PEER_RELAY="benflint/walnut-relay"   # .relay field
+PEER_NAME="Ben Flint"               # .name field
 ```
 
 These three variables are the **single source of truth** for Steps 9d-9g. They must be declared at the top of the consolidated script block and never re-derived.
@@ -659,31 +673,49 @@ fi
 
 # ── Step 9e: RSA-encrypt the package for relay ──
 # Extract the local .walnut to get its contents
-tar -xzf "$WALNUT_FILE" -C "$RELAY_STAGING"
+if ! tar -xzf "$WALNUT_FILE" -C "$RELAY_STAGING"; then
+  echo "EXTRACT_FAILED"
+  exit 1
+fi
 
 # Handle passphrase-encrypted local packages
 if [ -f "$RELAY_STAGING/payload.enc" ] && [ ! -f "$RELAY_STAGING/payload.key" ]; then
-  WALNUT_PASSPHRASE="<passphrase-from-step-5>" \
+  if ! WALNUT_PASSPHRASE="<passphrase-from-step-5>" \
     openssl enc -d -aes-256-cbc -pbkdf2 -iter 600000 \
     -in "$RELAY_STAGING/payload.enc" -out "$INNER_TAR" \
-    -pass env:WALNUT_PASSPHRASE
+    -pass env:WALNUT_PASSPHRASE; then
+    echo "DECRYPT_FAILED"
+    exit 1
+  fi
   rm "$RELAY_STAGING/payload.enc"
-  tar -xzf "$INNER_TAR" -C "$RELAY_STAGING"
+  tar -xzf "$INNER_TAR" -C "$RELAY_STAGING" || { echo "EXTRACT_FAILED"; exit 1; }
   rm -f "$INNER_TAR"
 fi
 
 # Create inner tar.gz of content (everything except manifest.yaml)
-COPYFILE_DISABLE=1 tar -czf "$INNER_TAR" -C "$RELAY_STAGING" --exclude='manifest.yaml' .
+if ! COPYFILE_DISABLE=1 tar -czf "$INNER_TAR" -C "$RELAY_STAGING" --exclude='manifest.yaml' .; then
+  echo "ARCHIVE_FAILED"
+  exit 1
+fi
 
 # Generate random AES-256 key and encrypt payload
-openssl rand 32 > "$AES_KEY"
-openssl enc -aes-256-cbc -salt -pbkdf2 -iter 600000 \
-  -in "$INNER_TAR" -out "$RELAY_STAGING/payload.enc" -pass "file:$AES_KEY"
+if ! openssl rand 32 > "$AES_KEY"; then
+  echo "KEYGEN_FAILED"
+  exit 1
+fi
+if ! openssl enc -aes-256-cbc -salt -pbkdf2 -iter 600000 \
+  -in "$INNER_TAR" -out "$RELAY_STAGING/payload.enc" -pass "file:$AES_KEY"; then
+  echo "ENCRYPT_FAILED"
+  exit 1
+fi
 
 # Wrap AES key with peer's RSA public key (OAEP-SHA256)
-openssl pkeyutl -encrypt -pubin -inkey "$PEER_PUBKEY" \
+if ! openssl pkeyutl -encrypt -pubin -inkey "$PEER_PUBKEY" \
   -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 \
-  -in "$AES_KEY" -out "$RELAY_STAGING/payload.key"
+  -in "$AES_KEY" -out "$RELAY_STAGING/payload.key"; then
+  echo "RSA_WRAP_FAILED"
+  exit 1
+fi
 
 # Securely delete the plaintext AES key and inner tar
 rm -P "$AES_KEY" 2>/dev/null || rm -f "$AES_KEY"
@@ -741,6 +773,10 @@ COPYFILE_DISABLE=1 tar -czf "$RELAY_WALNUT" -C "$RELAY_STAGING" .
 
 # File size guard (GitHub Contents API 100 MB limit)
 WALNUT_SIZE=$(stat -f '%z' "$RELAY_WALNUT" 2>/dev/null || stat --format='%s' "$RELAY_WALNUT" 2>/dev/null)
+if [ -z "$WALNUT_SIZE" ]; then
+  echo "SIZE_CHECK_FAILED"
+  exit 1
+fi
 if [ "$WALNUT_SIZE" -gt 104857600 ]; then
   echo "TOO_LARGE"
   exit 1
@@ -774,6 +810,7 @@ echo "PUSH_SUCCESS=$PUSH_SUCCESS"
 - `PEER_USERNAME` is used in the push path (`inbox/$PEER_USERNAME/`) -- this is the **recipient's** inbox on the **recipient's** relay. The sender's username is only used in the manifest `relay.sender` field.
 - `trap` ensures temp file cleanup on all exit paths (success, key failure, push failure, unexpected errors).
 - Expected failures (key fetch, push) use `if ! ...; then` -- not `set -e` -- so error messages reach the user.
+- Critical pipeline operations (`tar`, `openssl enc`, `openssl pkeyutl`, `openssl rand`) also check return codes and exit on failure with descriptive status codes.
 - All temp files use `mktemp`, never `$$`.
 - The passphrase (if the local package was encrypted) is passed via `env:`, never as a CLI argument.
 
