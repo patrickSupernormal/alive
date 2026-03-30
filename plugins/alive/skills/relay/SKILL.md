@@ -777,17 +777,22 @@ If `HAS_REAL_RELAY` is `NO`, offer to set one up:
 ╰─
 ```
 
-If yes, run the full `/alive:relay setup` flow (Steps 2 through 7). After setup completes, read back `PEER_OWNER`:
+If yes, run the full `/alive:relay setup` flow (Steps 2 through 7). After setup completes, read back `PEER_OWNER` and mark relay as real:
 
 ```bash
 PEER_OWNER=$(cat "$WORLD_ROOT/.alive/.peer_accept_pending" 2>/dev/null)
+HAS_REAL_RELAY="YES"
 ```
 
 Continue to Step 5.
 
+**If "Later":** Skip Steps 5 and 6 entirely (no relay means no keys to push and no repo to invite into). Jump directly to Step 7 (display name prompt).
+
 ### Step 5 -- Push own public key to peer's relay
 
-If the human has their own relay (either pre-existing or just created), push their public key to the peer's relay via the Contents API so the peer can encrypt packages for them:
+**Only runs when `HAS_REAL_RELAY` is `YES`** (pre-existing or just created in Step 4). If "Later" was chosen, this step was already skipped per Step 4 instructions.
+
+Push the public key to the peer's relay via the Contents API so the peer can encrypt packages:
 
 ```bash
 PUBLIC_KEY_B64=$(base64 < "$WORLD_ROOT/.alive/relay-keys/public.pem" | tr -d '\n')
@@ -809,11 +814,15 @@ If the key already exists (API returns 422), the peer already has your key. Skip
 
 ```bash
 if [ "$HAS_REAL_RELAY" != "YES" ] || [ -z "$PEER_OWNER" ]; then
-  echo "SKIP_INVITE"
+  # No real relay or no peer owner -- show guidance and skip to Step 7
+  # Show the "heads up" block below, then proceed directly to Step 7
+  SKIP_INVITE="true"
+else
+  SKIP_INVITE="false"
 fi
 ```
 
-**If gating fails (no real relay):** Don't offer the invite-back prompt. Instead, show guidance:
+**If `SKIP_INVITE` is `true`:** Show guidance and skip to Step 7:
 
 ```
 ╭─ 🐿️ heads up
@@ -824,9 +833,7 @@ fi
 ╰─
 ```
 
-Skip to Step 7.
-
-**If gating passes:** Check collaborator state. Parse only the HTTP status line (starts with `HTTP/`):
+**If `SKIP_INVITE` is `false`:** Check collaborator state. Parse only the HTTP status line (starts with `HTTP/`):
 
 ```bash
 RESPONSE=$(gh api "repos/$GITHUB_USERNAME/walnut-relay/collaborators/$PEER_OWNER" -i --silent 2>&1)
@@ -932,6 +939,24 @@ with open(sys.argv[1]) as f:
 
 - **Enter / empty:** Use the GitHub username as both display name and slug
 - **Name provided:** Use as display name; derive slug via the same logic as peer add Step 6
+
+After the prompt, set `PEER_NAME` and `PEER_SLUG` explicitly:
+
+```bash
+# If empty/skipped, default to GitHub username
+if [ -z "$PEER_NAME" ]; then
+  PEER_NAME="$PEER_OWNER"
+fi
+
+# Derive slug from the display name (same logic as peer add Step 6)
+PEER_SLUG=$(python3 -c "
+import sys, re, unicodedata
+name = sys.argv[1]
+name = unicodedata.normalize('NFKD', name).encode('ascii', 'ignore').decode()
+slug = re.sub(r'[^a-z0-9]+', '-', name.lower()).strip('-')
+print(slug)
+" "$PEER_NAME")
+```
 
 ### Step 8 -- Write or update .alive/relay.yaml
 
