@@ -494,13 +494,14 @@ If `NO_RELAY`, skip the entire step. The local `.walnut` file stands alone.
 
 #### 9b. Parse peers and check relay reachability
 
-Read the peer list, filter to `status: "accepted"`, then probe each peer's relay repo. The output is tab-delimited lines printed to stdout -- one line per peer. The squirrel (AI agent) reads this output and uses it to build the Step 9c menu. No shell variable persistence is needed between steps; the AI reads the printed text and writes selected values as literals into the Step 9d-9g script.
+Read the peer list, filter to `status: "accepted"`, then probe each peer's relay repo. The output is an indexed `PEERS` bash array. Steps 9b and 9c MUST run in the same Bash invocation so the array persists.
 
-**Reachability check:** For each accepted peer, verify their relay repo is accessible via the GitHub API. Use explicit timeout wrapping (same pattern as `alive-relay-check.sh`):
+**Reachability check:** For each accepted peer, verify their relay repo is accessible via the GitHub API. Per-peer timeout is `min(5, remaining_budget)` to enforce a hard 10s total cap.
 
 ```bash
-python3 - "$WORLD_ROOT/.alive/relay.yaml" << 'PYEOF'
-import sys, re, subprocess, time
+# Steps 9b + 9c run together in one Bash invocation
+eval "$(python3 - "$WORLD_ROOT/.alive/relay.yaml" << 'PYEOF'
+import sys, re, subprocess, time, shlex
 
 config_path = sys.argv[1]
 with open(config_path) as f:
@@ -523,11 +524,11 @@ for block in blocks:
             })
 
 if not peers:
+    print("PEERS=()")
     print("PEER_COUNT=0")
     sys.exit(0)
 
 # Probe each peer's relay with 5s per-peer timeout, 10s hard total cap.
-# Per-peer timeout is min(5, remaining_budget) so we never exceed 10s.
 TOTAL_BUDGET = 10
 PER_PEER_MAX = 5
 total_start = time.time()
@@ -539,7 +540,6 @@ for p in peers:
     peer_timeout = min(PER_PEER_MAX, remaining)
     try:
         # Use -i to include HTTP headers; check both stdout and stderr
-        # for the status code (gh may write headers to either stream)
         r = subprocess.run(
             ["gh", "api", f"repos/{p['relay']}", "-i", "--silent"],
             capture_output=True, timeout=peer_timeout
@@ -563,23 +563,34 @@ for p in peers:
     except Exception:
         p["status"] = "OTHER_ERROR"
 
-# Emit one line per peer: index\tgithub\trelay\tname\tstatus
-# Tab-delimited -- tabs cannot appear in GitHub usernames, repo names, or display names
+# Emit indexed PEERS bash array. shlex.quote ensures all values
+# (including names with spaces, quotes, or special chars) are safe.
+print("PEERS=()")
 for i, p in enumerate(peers):
-    print(f"{i+1}\t{p['github']}\t{p['relay']}\t{p['name']}\t{p['status']}")
+    # Each PEERS entry: "github=<val> relay=<val> name=<val> status=<val>"
+    # shlex.quote wraps each value safely for bash eval
+    entry = (f"github={shlex.quote(p['github'])} "
+             f"relay={shlex.quote(p['relay'])} "
+             f"name={shlex.quote(p['name'])} "
+             f"status={p['status']}")
+    print(f"PEERS[{i+1}]={shlex.quote(entry)}")
 print(f"PEER_COUNT={len(peers)}")
 PYEOF
+)"
+
+# After eval, PEERS[] and PEER_COUNT are set. Print for visibility:
+echo "PEER_COUNT=$PEER_COUNT"
+for i in $(seq 1 $PEER_COUNT); do echo "PEERS[$i]=${PEERS[$i]}"; done
 ```
 
-The output uses tab-delimited lines (one per peer). Tabs cannot appear in GitHub usernames, repository names, or display names, making this encoding safe without escaping. The last line is `PEER_COUNT=N`. Example:
+The `eval` populates the `PEERS` bash array. Each entry contains four `key=value` fields with safe quoting via `shlex.quote`. Example output after eval:
 
-```
-1	benflint	benflint/walnut-relay	Ben Flint	OK
-2	carolsmith	carolsmith/walnut-relay	Carol Smith	NOT_FOUND_OR_NO_ACCESS
+```bash
+PEERS=()
+PEERS[1]='github=benflint relay=benflint/walnut-relay name='\''Ben Flint'\'' status=OK'
+PEERS[2]='github=carolsmith relay=carolsmith/walnut-relay name='\''Carol Smith'\'' status=NOT_FOUND_OR_NO_ACCESS'
 PEER_COUNT=2
 ```
-
-**Note on variable persistence:** Steps 9b and 9c are AI-mediated. The squirrel reads the printed output from Step 9b, presents the menu to the human in Step 9c, then writes the selected peer's `PEER_USERNAME`, `PEER_RELAY`, and `PEER_NAME` as literal string values into the Step 9d-9g consolidated script. The `PEERS_DATA` variable does not need to persist across Bash invocations -- the AI reads the output and hardcodes the selected values.
 
 If `PEER_COUNT=0`, skip relay push. Surface a brief note only if the human explicitly mentioned relay during the session, otherwise skip silently.
 
@@ -594,7 +605,9 @@ If `PEER_COUNT=0`, skip relay push. Surface a brief note only if the human expli
 
 #### 9c. Present relay push option
 
-Build the menu from the tab-delimited peer lines printed by Step 9b:
+**This step runs in the same Bash invocation as Step 9b** (the `PEERS` array must be in scope).
+
+Build the menu from the `PEERS` array:
 
 ```
 ╭─ 🐿️ relay
@@ -613,20 +626,27 @@ Peers with `NOT_FOUND_OR_NO_ACCESS` status are shown with "(not found or no acce
 
 The last option is always "Skip". If only one peer exists, still show the menu.
 
-**When the human selects a peer (e.g., "1"), read the corresponding line from Step 9b output and extract the three identity variables:**
+**When the human selects a peer (e.g., "1"), extract the three identity variables from `PEERS[$selection]`:**
 
 ```bash
-# The squirrel reads the tab-delimited output from Step 9b and extracts fields
-# for the selected peer. These values are then hardcoded into the Step 9d-9g script.
-# Example for selection "1" from the output "1\tbenflint\tbenflint/walnut-relay\tBen Flint\tOK":
-PEER_USERNAME="benflint"             # field 2 (github)
-PEER_RELAY="benflint/walnut-relay"   # field 3 (relay)
-PEER_NAME="Ben Flint"               # field 4 (name)
+# Extract fields from PEERS[$selection] using Python for robust parsing
+# (handles quoted values with spaces, special chars safely)
+SELECTED="${PEERS[$selection]}"
+eval "$(python3 -c "
+import shlex, sys
+fields = shlex.split(sys.argv[1])
+d = {}
+for f in fields:
+    k, v = f.split('=', 1)
+    d[k] = v
+# Emit shell-safe assignments
+print(f'PEER_USERNAME={shlex.quote(d[\"github\"])}')
+print(f'PEER_RELAY={shlex.quote(d[\"relay\"])}')
+print(f'PEER_NAME={shlex.quote(d[\"name\"])}')
+" "$SELECTED")"
 ```
 
-The squirrel reads the Step 9b output, identifies the line matching the selection, and writes these three values as literal strings into the Step 9d-9g consolidated script.
-
-These three variables are the **single source of truth** for Steps 9d-9g. They must be declared at the top of the consolidated script block and never re-derived.
+These three variables (`PEER_USERNAME`, `PEER_RELAY`, `PEER_NAME`) are the **single source of truth** for Steps 9d-9g. They are passed as literal string values into the consolidated script.
 
 If the human skips, the step ends. The local `.walnut` file is the output.
 
