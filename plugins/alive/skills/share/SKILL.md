@@ -494,13 +494,13 @@ If `NO_RELAY`, skip the entire step. The local `.walnut` file stands alone.
 
 #### 9b. Parse peers and check relay reachability
 
-Read the peer list, filter to `status: "accepted"`, then probe each peer's relay repo. The output is an indexed `PEERS` bash array that Step 9c uses for selection mapping.
+Read the peer list, filter to `status: "accepted"`, then probe each peer's relay repo. The output is tab-delimited lines printed to stdout -- one line per peer. The squirrel (AI agent) reads this output and uses it to build the Step 9c menu. No shell variable persistence is needed between steps; the AI reads the printed text and writes selected values as literals into the Step 9d-9g script.
 
 **Reachability check:** For each accepted peer, verify their relay repo is accessible via the GitHub API. Use explicit timeout wrapping (same pattern as `alive-relay-check.sh`):
 
 ```bash
 PEERS_DATA=$(python3 - "$WORLD_ROOT/.alive/relay.yaml" << 'PYEOF'
-import sys, re, subprocess, time, json
+import sys, re, subprocess, time
 
 config_path = sys.argv[1]
 with open(config_path) as f:
