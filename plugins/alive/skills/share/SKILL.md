@@ -499,7 +499,7 @@ Read the peer list, filter to `status: "accepted"`, then probe each peer's relay
 **Reachability check:** For each accepted peer, verify their relay repo is accessible via the GitHub API. Use explicit timeout wrapping (same pattern as `alive-relay-check.sh`):
 
 ```bash
-PEERS_DATA=$(python3 - "$WORLD_ROOT/.alive/relay.yaml" << 'PYEOF'
+python3 - "$WORLD_ROOT/.alive/relay.yaml" << 'PYEOF'
 import sys, re, subprocess, time
 
 config_path = sys.argv[1]
@@ -569,9 +569,6 @@ for i, p in enumerate(peers):
     print(f"{i+1}\t{p['github']}\t{p['relay']}\t{p['name']}\t{p['status']}")
 print(f"PEER_COUNT={len(peers)}")
 PYEOF
-)
-
-echo "$PEERS_DATA"
 ```
 
 The output uses tab-delimited lines (one per peer). Tabs cannot appear in GitHub usernames, repository names, or display names, making this encoding safe without escaping. The last line is `PEER_COUNT=N`. Example:
@@ -597,7 +594,7 @@ If `PEER_COUNT=0`, skip relay push. Surface a brief note only if the human expli
 
 #### 9c. Present relay push option
 
-Build the menu from the pipe-delimited peer lines emitted by Step 9b:
+Build the menu from the tab-delimited peer lines printed by Step 9b:
 
 ```
 ╭─ 🐿️ relay
