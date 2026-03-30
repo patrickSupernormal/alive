@@ -17,7 +17,10 @@ fi
 
 # Extract target paths after the rm/rmdir/unlink command
 # Note: BSD sed (macOS) does not support \b or \s — use POSIX classes instead.
-TARGET=$(echo "$COMMAND" | sed -E 's/.*(^|[^[:alnum:]_])(rm|rmdir|unlink)[[:space:]]+(-[^ ]+ )*//' | tr ' ' '\n' | grep -v '^-')
+# Pipeline: strip command+flags → normalise operators → split tokens →
+# drop flags → stop at shell operators and drop redirections.
+# The sed 's/[;)()]/ & /g' step pads ;/() so "path;cmd" or "(path)" split correctly.
+TARGET=$(echo "$COMMAND" | sed -E 's/.*(^|[^[:alnum:]_])(rm|rmdir|unlink)[[:space:]]+(-[^ ]+ )*//' | sed 's/[;)(]/ & /g' | tr ' ' '\n' | grep -v '^-' | sed -n '/^[;&|;()]/q; /[<>]/d; /^$/d; p')
 
 # Use cwd from JSON input for resolving relative paths
 RESOLVE_DIR="${HOOK_CWD:-$PWD}"
