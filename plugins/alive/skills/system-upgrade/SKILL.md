@@ -333,10 +333,11 @@ If both `walnut-root/now.md` AND `_core/now.md` (or `_kernel/now.md`) exist:
 5. **Convert tasks** -- `tasks.md` -> `tasks.json` + `completed.json` (per bundle and per kernel)
 6. **Create completed.json** -- `_kernel/completed.json` with migrated done tasks
 7. **Migrate observations** -- `observations.md` -> manifest context field or removed
-8. **Post-upgrade fixups** -- find-replace `_kernel/_generated/` -> `_kernel/`, `bundles/X` -> `X`, `tasks.md` -> `tasks.json`, `observations.md` references removed, in all custom skills, scripts, CLAUDE.md files, hooks
-9. **Regenerate state** -- run `project.py --walnut {path}` for fresh `now.json`
-10. **Verify structure** -- confirm v3 expectations met
-11. **Log the upgrade** -- write entry to `.alive/log.md`
+8. **Rename inbox domain** -- `03_Inputs/` -> `03_Inbox/` at world root (if exists)
+9. **Post-upgrade fixups** -- find-replace `_kernel/_generated/` -> `_kernel/`, `bundles/X` -> `X`, `tasks.md` -> `tasks.json`, `observations.md` references removed, `03_Inputs` -> `03_Inbox`, in all custom skills, scripts, CLAUDE.md files, hooks
+10. **Regenerate state** -- run `project.py --walnut {path}` for fresh `now.json`
+11. **Verify structure** -- confirm v3 expectations met
+12. **Log the upgrade** -- write entry to `.alive/log.md`
 
 **Safety rules for v2->v3 (and all paths):**
 - Back up every file before moving or converting

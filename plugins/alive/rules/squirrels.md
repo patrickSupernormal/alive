@@ -330,11 +330,12 @@ EXIT (session actually ends)
 
 The squirrel spawns background agents for atomic tasks. Every agent MUST receive the subagent brief so it understands the ALIVE system.
 
-**Brief pack location:** `.alive/_generated/subagent-brief.md`
+**Brief pack location:** Ships with the plugin at `templates/subagent-brief.md` (relative to the plugin root where rules and skills loaded from).
 
 **INJECTION IS MANUAL — NOT AUTOMATIC.** Claude Code does not auto-inject files into Agent tool calls. Before dispatching ANY agent, the squirrel must:
-1. Read `.alive/_generated/subagent-brief.md` (once per session, cache the content)
-2. Prepend the brief content to every Agent prompt: `"CONTEXT:\n{brief_content}\n\nTASK:\n{actual_task}"`
+1. Read the subagent brief template from the plugin directory (once per session, cache the content). Find it relative to the rules — same parent directory that contains `rules/`, `skills/`, `templates/`.
+2. Substitute `{WORLD_ROOT}` with the actual world root path and `{PLUGIN_ROOT}` with the resolved plugin path
+3. Prepend the brief content to every Agent prompt: `"CONTEXT:\n{brief_content}\n\nTASK:\n{actual_task}"`
 
 If you skip this, the subagent will not know about walnuts, bundles, tasks.py, stash mechanics, or file structure. It WILL make mistakes.
 

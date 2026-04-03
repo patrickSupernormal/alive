@@ -27,8 +27,7 @@ fi
 FILE_PATH=$(json_field "tool_input.file_path")
 case "$FILE_PATH" in
   */log.md)
-    PROJECTOR="$WORLD_ROOT/.alive/scripts/project.py"
-    [ ! -f "$PROJECTOR" ] && PROJECTOR="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}/scripts/project.py"
+    PROJECTOR="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}/scripts/project.py"
     if [ -f "$PROJECTOR" ]; then
       # Extract walnut path by walking up from written file until finding _kernel/ parent
       WALNUT_PATH=""
@@ -67,9 +66,7 @@ esac
 # now.json is only written by save (per rules) -- use it as the trigger
 case "$FILE_PATH" in
   */_kernel/now.json|*/_kernel/_generated/now.json|*/_kernel/now.md)
-    GENERATOR="$WORLD_ROOT/.alive/scripts/generate-index.py"
-    # Fall back to plugin scripts dir
-    [ ! -f "$GENERATOR" ] && GENERATOR="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}/scripts/generate-index.py"
+    GENERATOR="${CLAUDE_PLUGIN_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}/scripts/generate-index.py"
     if [ -f "$GENERATOR" ]; then
       # Debounce -- skip if we regenerated in the last 5 minutes
       MARKER="/tmp/alive-index-regen"
