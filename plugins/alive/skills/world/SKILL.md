@@ -49,17 +49,17 @@ What needs the human's attention TODAY. Not everything — just what's active an
 │  RIGHT NOW
 │  ──────────────────────────────────────────────
 │
-│   1. nova-station            testing
-│      Next: Review telemetry from test window
+│   1. my-startup              launching
+│      Next: Record demo video for investor deck
 │      Last: 2 hours ago · 6 sessions this week
 │
-│   2. stellarforge            launching
-│      Next: Deploy relay satellites
+│   2. freelance-agency        legacy
+│      Next: Close out 3 remaining client contracts
 │      Last: 2 days ago
-│      People: Orion Vex, Luna Thresh
+│      People: Jake Chen, Sarah Mills
 │
-│   3. voidlight               legacy
-│      Next: Finalise 9 legacy contract closures
+│   3. social-content          building
+│      Next: Review 8 drafted posts in Buffer
 │      ⚠ 4 days past rhythm
 │
 ╰─
@@ -105,31 +105,30 @@ The full structure — grouped by ALIVE domain, with parent/child nesting visibl
 ╭─ 🐿️ your world
 │
 │  LIFE
-│   identity           active     Exoplanet panel Feb 27
-│   health             quiet      Sleep protocol review
+│   identity           active     LinkedIn bio update
+│   health             quiet      ADHD assessment follow-up
+│   finance            quiet      ⚠ 10 days — subscriptions review
 │   people/
-│     orion-vex        updated 2 days ago
-│     luna-thresh      updated 1 day ago
-│     zara             updated 5 days ago
+│     jake-chen        updated 2 days ago
+│     sarah-mills      updated 1 day ago
+│     tom              updated 5 days ago
 │
 │  VENTURES
-│   stellarforge       launching  Relay satellites
-│     └ walnut-plugin  building   Test install
-│   voidlight          legacy     Legacy contracts
-│   nebula-drift       quiet      Podcast landing
+│   my-startup         launching  MVP demo + investor deck
+│     └ mobile-app     building   React Native prototype
+│   freelance-agency   legacy     Closing out client contracts
 │
 │  EXPERIMENTS
-│   nova-station          building   Orbital test suite              3 bundles (2 draft, 1 done) · 4 tasks
-│   ghost-protocol     waiting    Decide: rewrite or revise
-│   flux-engine        quiet      ⚠ 12 days
-│   pulsar-sync        quiet      Simplify countdown
-│   ... +6 more (3 waiting, 3 quiet)
+│   social-content     building   Content calendar + Buffer queue     3 bundles · 4 tasks
+│   side-project       waiting    Decide: rewrite or revise
+│   podcast            quiet      ⚠ 12 days — episode 4 edit
+│   ... +3 more (2 waiting, 1 quiet)
 │
-│  INPUTS
+│  INBOX
 │   2 items (oldest: 4 days)
 │
 │  ARCHIVE
-│   1 walnut (starweave)
+│   1 walnut (old-portfolio)
 │
 ╰─
 ```
@@ -146,7 +145,7 @@ Key features:
 ```
 │   nova-station          ●●●●● building   Orbital test suite
 │   stellarforge       ●●○○○ launching   Relay satellites
-│   ghost-protocol     ○○○○○ waiting     Decide: rewrite or revise
+│   side-project     ○○○○○ waiting     Decide: rewrite or revise
 ```
 
 `●` = touched that day. `○` = no activity. Read left to right: today, yesterday, 2 days, 3 days, 4 days. Five dots tells you this walnut is hot. Zero tells you it's cold. No numbers, no dates — just a visual heartbeat.

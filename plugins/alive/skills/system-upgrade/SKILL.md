@@ -69,7 +69,7 @@ Before touching anything, understand what's there. Dispatch a scout agent (or mu
 - `observations.md` files inside bundles (v2 -- removed in v3)
 
 **Duplicate walnut detection:**
-- Scan for person walnuts that appear in multiple locations (e.g., `people/professional/attila/` AND `people/attila-mora/`)
+- Scan for person walnuts that appear in multiple locations (e.g., `people/professional/jane/` AND `people/jane-smith/`)
 - Compare key.md content: which is the stub, which has real data?
 - Flag all duplicates for human review before upgrade
 

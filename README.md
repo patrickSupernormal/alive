@@ -29,6 +29,8 @@ claude plugin install alive@alivecontext
 
 ## How It Works
 
+Open Claude Code at your `~/world`. The runtime is already loaded.
+
 ALIVE structures your context into plain files on your machine. Agents read them at session start and save what matters at session end. Everything in between — the decisions, the research, the people, the knowledge — gets structure instead of dying with the session.
 
 **Orient.** Before you say a word, the runtime has already oriented the agent — a lightweight index of your world, your preferences, and the behavioural rules that make the agent yours. When you load a walnut — a venture, an experiment, a person, a life area — three files give the agent its identity, current state, and standing knowledge. No re-explaining. No pasting context. The agent knows what you're building, who's involved, and what happened last time.
@@ -36,12 +38,16 @@ ALIVE structures your context into plain files on your machine. Agents read them
 **Work.** Every AI session is a context event. You're injecting context — files, transcripts, research, screenshots. You're generating context — decisions, architecture choices, domain knowledge. You're discovering context — connections between people, patterns across projects, insights that only surface mid-conversation. Right now, all of that is ephemeral. It dies when the window closes. ALIVE catches it as it happens.
 
 ```
-╭─ 🐿️ +2 stash (5)
-│   React Native for mobile app → my-startup
-│   Chase Jake for API specs → my-startup
+╭─ 🐿️ +4 stash (8)
+│   Decided: React Native for mobile app              → my-startup
+│   Task: Chase Jake for API specs by Friday           → my-startup
+│   Note: Jake prefers async comms, hates standups     → [[jake-chen]]
+│   Action: Connected ElevenLabs API for voiceover     → my-startup
 │   → drop?
 ╰─
 ```
+
+Decisions route to the log. Tasks route to the queue. People updates route to their person walnut. Actions get tracked. Nothing gets lost.
 
 **Save.** When you checkpoint, everything routes to where it belongs — decisions to the log, tasks to the queue, knowledge to insights, people updates to their own files. External content gets captured into bundles. Scripts compute a fresh snapshot. The ephemeral becomes structural.
 
@@ -77,12 +83,11 @@ Work gets done inside bundles. Each bundle has a goal and owns its own tasks.
 # context.manifest.yaml
 goal: "Ship the website from strategy deck to production"
 status: prototype         # draft | prototype | published | done
-type: outcome             # outcome | evergreen
 ```
 
 Two species: **outcome bundles** ship a deliverable and graduate. **Evergreen bundles** accumulate context over time — meeting notes, research, reference material.
 
-Bundles are shareable — post to [walnut.world](https://walnut.world), and your workflow becomes a context product.
+Bundles are shareable — your workflow becomes a context product anyone can install.
 
 ---
 
@@ -243,7 +248,7 @@ The upgrade skill mines your existing system, shows you what will change, and mi
 </td>
 <td width="50%" valign="top">
 <br>
-<p align="center"><em>"Bro. Walnuts is legendary."</em></p>
+<p align="center"><em>"Bro. ALIVE is legendary."</em></p>
 <p align="center"><strong><a href="https://instagram.com/roland.bernath.official">Roland Bernath</a></strong><br><sub>Growth Strategist · 6K followers</sub></p>
 </td>
 </tr>
