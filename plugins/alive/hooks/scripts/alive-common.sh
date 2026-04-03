@@ -171,7 +171,7 @@ find_world() {
 escape_for_json() {
   if [ ${#1} -gt 1000 ]; then
     if [ "$ALIVE_JSON_RT" = "python3" ]; then
-      printf '%s' "$1" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read())[1:-1], end='')"
+      printf '%s' "$1" | python3 -c "import sys,json; sys.stdout.buffer.write(json.dumps(sys.stdin.buffer.read().decode('utf-8','replace'))[1:-1].encode('utf-8'))"
     elif [ "$ALIVE_JSON_RT" = "node" ]; then
       printf '%s' "$1" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify(d).slice(1,-1)))"
     else

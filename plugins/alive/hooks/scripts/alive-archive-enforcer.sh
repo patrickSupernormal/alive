@@ -19,7 +19,7 @@ fi
 # Handles: quoted paths, spaces in filenames, flags, chained commands, multiple targets
 TARGET=$(echo "$COMMAND" | python3 -c "
 import sys, shlex, re
-cmd = sys.stdin.read().strip()
+cmd = sys.stdin.buffer.read().decode("utf-8","replace").strip()
 for part in re.split(r'[;&|]+', cmd):
     part = part.strip()
     try: tokens = shlex.split(part)
@@ -82,7 +82,7 @@ if [ -n "$RENAMED" ] || [ -n "$NOT_FOUND" ]; then
     [ -n "$REASON" ] && REASON="$REASON "
     REASON="${REASON}Not found (may already be removed): ${NOT_FOUND%, }."
   fi
-  REASON_ESCAPED=$(echo "$REASON" | python3 -c "import sys,json; print(json.dumps(sys.stdin.read().strip()))" 2>/dev/null || echo "\"Deletion blocked inside Alive world.\"")
+  REASON_ESCAPED=$(echo "$REASON" | python3 -c "import sys,json; print(json.dumps(sys.stdin.buffer.read().decode("utf-8","replace").strip()))" 2>/dev/null || echo "\"Deletion blocked inside Alive world.\"")
   echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":${REASON_ESCAPED}}}"
   exit 0
 fi
