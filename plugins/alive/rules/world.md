@@ -361,11 +361,11 @@ Walnuts that track external codebases include `repo:` in `_kernel/key.md`. This 
 - **Multiple repos:** A walnut can track multiple repos via a list in `repo:`.
 
 ```yaml
-repo: github.com/stackwalnuts/alive
+repo: github.com/alivecontext/alive
 # or multiple:
 repo:
-  - github.com/stackwalnuts/alive
-  - github.com/stackwalnuts/alive-web
+  - github.com/alivecontext/alive
+  - github.com/alivecontext/alive-web
 ```
 
 ---

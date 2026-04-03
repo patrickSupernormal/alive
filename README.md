@@ -1,8 +1,8 @@
 <p align="center">
-  <a href="https://github.com/stackwalnuts/alive/stargazers"><img src="https://img.shields.io/github/stars/stackwalnuts/alive?style=flat&color=F97316&label=Stars" alt="GitHub Stars"></a>
-  <a href="https://github.com/stackwalnuts/alive/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <a href="https://github.com/alivecontext/alive/stargazers"><img src="https://img.shields.io/github/stars/alivecontext/alive?style=flat&color=F97316&label=Stars" alt="GitHub Stars"></a>
+  <a href="https://github.com/alivecontext/alive/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
   <a href="https://walnut.world"><img src="https://img.shields.io/badge/walnut.world-marketplace-brightgreen" alt="walnut.world"></a>
-  <a href="https://x.com/stackwalnuts"><img src="https://img.shields.io/badge/𝕏-@stackwalnuts-000000?logo=x&logoColor=white" alt="@stackwalnuts"></a>
+  <a href="https://x.com/ALIVE_context"><img src="https://img.shields.io/badge/𝕏-@ALIVE_context-000000?logo=x&logoColor=white" alt="@ALIVE_context"></a>
 </p>
 
 <h3 align="center">A living context system for Claude Code.<br>The successor to PARA. Your life in walnuts.</h3>
@@ -14,7 +14,7 @@
 ---
 
 ```bash
-claude plugin install alive@stackwalnuts
+claude plugin install alive@alivecontext
 ```
 
 ---
@@ -146,7 +146,7 @@ A save triggers the generation chain: bundle manifests → `now.json` → `world
 ## Install
 
 ```bash
-claude plugin install alive@stackwalnuts
+claude plugin install alive@alivecontext
 ```
 
 That's it. The ALIVE Context System is a Claude Code plugin. 15 skills, 14 hooks, 6 rule files, templates, and a statusline.
@@ -175,7 +175,7 @@ That's it. The ALIVE Context System is a Claude Code plugin. 15 skills, 14 hooks
 
 ```bash
 # Install the new plugin
-claude plugin install alive@stackwalnuts
+claude plugin install alive@alivecontext
 
 # Run the upgrade
 /alive:system-upgrade
@@ -246,7 +246,7 @@ The ALIVE Context System is our first product. We're not saying markdown is the 
 
 ## Contributing
 
-Want to build with us? [Open an issue](https://github.com/stackwalnuts/alive/issues), join the conversation in [Discussions](https://github.com/stackwalnuts/alive/discussions), or check the [contributing guide](CONTRIBUTING.md).
+Want to build with us? [Open an issue](https://github.com/alivecontext/alive/issues), join the conversation in [Discussions](https://github.com/alivecontext/alive/discussions), or check the [contributing guide](CONTRIBUTING.md).
 
 ---
 
@@ -254,9 +254,9 @@ Want to build with us? [Open an issue](https://github.com/stackwalnuts/alive/iss
   <br>
   <a href="https://alivecontext.com"><img src="https://img.shields.io/badge/🐿️_Alive_Context_System-alivecontext.com-F97316?style=for-the-badge&labelColor=0a0a0a" alt="ALIVE Context System"></a>
   &nbsp;&nbsp;
-  <a href="https://github.com/stackwalnuts/alive"><img src="https://img.shields.io/github/stars/stackwalnuts/alive?style=for-the-badge&logo=github&labelColor=0a0a0a&color=F97316" alt="Star on GitHub"></a>
+  <a href="https://github.com/alivecontext/alive"><img src="https://img.shields.io/github/stars/alivecontext/alive?style=for-the-badge&logo=github&labelColor=0a0a0a&color=F97316" alt="Star on GitHub"></a>
   &nbsp;&nbsp;
-  <a href="https://x.com/stackwalnuts"><img src="https://img.shields.io/badge/𝕏-@stackwalnuts-F97316?style=for-the-badge&logo=x&logoColor=white&labelColor=0a0a0a" alt="Follow @stackwalnuts"></a>
+  <a href="https://x.com/ALIVE_context"><img src="https://img.shields.io/badge/𝕏-@ALIVE_context-F97316?style=for-the-badge&logo=x&logoColor=white&labelColor=0a0a0a" alt="Follow @ALIVE_context"></a>
   <br><br>
 </p>
 
