@@ -32,8 +32,27 @@ Scan `*/` across walnuts (bundles are flat in walnut root). Find drafts by name,
 ### 6. Bundle Manifest Search (captured content metadata)
 Search `*/context.manifest.yaml` files across walnuts (bundles are flat in walnut root). Match on frontmatter: type, date, source, participants, subject.
 
-### 7. Raw Reference Search (last resort, expensive)
+### 7. Raw Reference Search (expensive)
 Load actual raw files. Only on explicit request — "read me that email from Jax."
+
+### 8. Context Source Cascade (if nothing found locally)
+**If steps 1-7 return nothing and the user believes it exists**, automatically fan out to configured context sources before reporting "not found." Check `.alive/preferences.yaml` `context_sources:` for what's available — any configured MCP server, sync script, or API connection is a valid search target.
+
+One-hop inference applies: if the user says "the setup guide I sent Sarah" and an email integration is configured, that's enough to trigger a search without being asked. The system should resolve across its full context surface — local files are not the only source of truth.
+
+```
+╭─ 🐿️ not found in local files
+│  Checking configured context sources...
+│  → Found in email: sent to Sarah, Mar 15, "Setup Guide v2"
+│
+│  ▸ What now?
+│  1. Read it
+│  2. Capture it to a walnut
+│  3. Skip
+╰─
+```
+
+**Never say "not found" if context sources haven't been checked.**
 
 ---
 
