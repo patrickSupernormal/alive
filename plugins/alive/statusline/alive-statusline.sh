@@ -78,7 +78,7 @@ fi
 WORLD_ROOT=""
 DIR="${CWD:-$PWD}"
 while [ "$DIR" != "/" ]; do
-  if [ -d "$DIR/01_Archive" ] && [ -d "$DIR/02_Life" ]; then
+  if [ -d "$DIR/.alive" ]; then
     WORLD_ROOT="$DIR"
     break
   fi
